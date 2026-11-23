@@ -413,9 +413,9 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, shape: GlassShape
       common.u_radius.value = geometry.radius
       common.u_open.value = open
       common.u_aa.value = Math.max(.35, .62 / (canvas.width / frame.width * scale))
-      common.u_tone.value.set(material.blur, effective.saturation, effective.brightness)
+      common.u_tone.value.set(effective.blur, effective.saturation, effective.brightness)
       common.u_lens.value.set(material.rimWidth, material.edge, material.power, material.dispersion)
-      common.u_style.value.set(material.shadow, effective.tint, material.light)
+      common.u_style.value.set(effective.shadow, effective.tint, material.light)
       common.u_tintColor.value.set(...climate.glass.tintColor)
       common.u_inkBrightness.value = frame.inkBrightness
       common.u_weatherLight.value.set(...climate.rimTint)

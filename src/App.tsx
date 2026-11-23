@@ -101,7 +101,7 @@ export function App() {
   }
 
   return <main>
-    <section className="specimen" aria-labelledby="lab-title">
+    <section className="specimen" data-weather={weather} aria-labelledby="lab-title">
       <GlassStage
         {...SCENE} material={material} playing={playing} expanded={expanded} selected={selected}
         gap={gap} samples={samples} reset={reset} reducedMotion={reducedMotion}

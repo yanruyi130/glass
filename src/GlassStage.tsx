@@ -236,7 +236,8 @@ export function GlassStage(props: Props) {
       const settling = Math.abs(inkBrightness - targetInk) > .001
       if (!settling) inkBrightness = targetInk
       if (!displayed || Math.abs(displayed.tint - tone.tint) > .003
-        || Math.abs(displayed.saturation - tone.saturation) > .007 || Math.abs(displayed.brightness - tone.brightness) > .007) {
+        || Math.abs(displayed.saturation - tone.saturation) > .007 || Math.abs(displayed.brightness - tone.brightness) > .007
+        || Math.abs(displayed.blur - tone.blur) > .009 || Math.abs(displayed.shadow - tone.shadow) > .003) {
         displayed = tone
         state.onEffective(tone)
       }

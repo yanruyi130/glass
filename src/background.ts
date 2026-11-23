@@ -1,4 +1,5 @@
 import type { Climate, Rgb } from './climate'
+import { createDayClouds } from './dayClouds'
 import { clamp, mix } from './material'
 
 export type AudioInput = Readonly<{ low: number; mid: number; high: number; energy: number }>
@@ -44,6 +45,17 @@ function glow(context: CanvasRenderingContext2D, x: number, y: number, radius: n
   fill.addColorStop(1, rgba(color, 0))
   context.fillStyle = fill
   context.fillRect(x - radius, y - radius, radius * 2, radius * 2)
+}
+
+function paintSun(context: CanvasRenderingContext2D, x: number, y: number, aspect: number, daylight: number) {
+  if (daylight < .002) return
+  context.save()
+  context.translate(x, y)
+  context.scale(1 / aspect, 1)
+  glow(context, 0, 0, .23, [255, 246, 213], daylight * .27)
+  glow(context, 0, 0, .092, [255, 250, 234], daylight * .42)
+  glow(context, 0, 0, .030, [255, 251, 232], daylight * .83)
+  context.restore()
 }
 
 function trace(context: CanvasRenderingContext2D, curve: Curve, offset: number, reversed = false) {
@@ -251,6 +263,7 @@ export function createBackground(canvas: HTMLCanvasElement) {
   const context = canvasContext
   let width = 1, height = 1
   let clouds: readonly HTMLCanvasElement[] | null = null
+  let dayClouds: ReturnType<typeof createDayClouds> | null = null
 
   function resize(cssWidth: number, cssHeight: number, pixelRatio: number) {
     width = Math.max(1, cssWidth)
@@ -265,17 +278,18 @@ export function createBackground(canvas: HTMLCanvasElement) {
     const narrow = clamp((1.9 - width / height) / 1.2)
     const t = phase * .178
     const amplitude = climate.waveAmplitude * (1 + .29 * audio.low * audio.energy)
+    const daylight = climate.sunlight
     const fine = audio.mid * audio.energy
     const glint = audio.high * audio.energy
     const cobalt = bend([
       [-.18, .96],
-      [.07, .87, .22 + narrow * .05, .36, .51, .36],
-      [.77, .35, .87, .38, 1.17, .06 + narrow * .2],
+      [.07, .87, .22 + narrow * .05, .36 + daylight * .115, .51, .36 + daylight * .095],
+      [.77, .35 + daylight * .085, .87, .38 + daylight * .076, 1.17, .06 + narrow * .2 + daylight * .047],
     ], t, amplitude, .21, fine)
     const current = bend([
       [-.18, 1.05 - narrow * .11],
-      [.09, 1.03, .29 - narrow * .08, .42, .53, .49],
-      [.78, .56, .91, .63 - narrow * .07, 1.16, .20 + narrow * .05],
+      [.09, 1.03, .29 - narrow * .08, .42 + daylight * .053, .53, .49 + daylight * .033],
+      [.78, .56 + daylight * .037, .91, .63 - narrow * .07, 1.16, .20 + narrow * .05],
     ], t, amplitude, .44, fine)
     const fold = bend([
       [-.18, 1.13 - narrow * .05],
@@ -290,9 +304,9 @@ export function createBackground(canvas: HTMLCanvasElement) {
 
     const palette = climate.palette
     const [air, satin, accent] = palette.light
-    const shade: Rgb = [11, 22, 45]
-    const sunX = .33 + .032 * Math.sin(t * .47)
-    const sunY = .30 + .018 * Math.cos(t * .57)
+    const shade: Rgb = [mix(11, 67, daylight), mix(22, 139, daylight), mix(45, 183, daylight)]
+    const sunX = .676 + .018 * Math.sin(t * .47)
+    const sunY = .164 + .009 * Math.cos(t * .57) + narrow * .022
     const shineX = .60 + .083 * Math.sin(t * .74 + .32)
     const sheen = .94 + .06 * Math.sin(t * 1.28)
     const cloudX = .49 + .17 * Math.sin(time * .048 + 2.1)
@@ -302,8 +316,11 @@ export function createBackground(canvas: HTMLCanvasElement) {
     context.fillRect(0, 0, 1, 1)
     glow(context, .64 + Math.cos(t * .42) * .058, .194, .61, air, .30)
     glow(context, .86, .46, .54, satin, .14)
-    glow(context, sunX, sunY, .33, accent, climate.sunlight * .53)
-    glow(context, sunX + .012, sunY + .023, .17, accent, climate.sunlight * .24)
+    paintSun(context, sunX, sunY, width / height, daylight)
+    if (daylight > .002) {
+      dayClouds ??= createDayClouds()
+      dayClouds(context, time, daylight, narrow)
+    }
     if (climate.cloudCover > .035) {
       clouds ??= [cloudStamp(23, .15), cloudStamp(71, .87)]
       paintClouds(context, clouds, time, climate.cloudCover)
@@ -312,15 +329,15 @@ export function createBackground(canvas: HTMLCanvasElement) {
     sheet(context, cobalt, -.043, gradient(context, [0, .36, 1, .71], palette.distant, FOUR))
     sheet(context, cobalt, 0, gradient(context, [.08, .32, .82, .86], palette.cobalt, FIVE))
     sheetGlow(context, cobalt, shineX, heightAt(cobalt, shineX) + .055, .41, air, .33 * sheen)
-    sheetGlow(context, cobalt, .89, .56, .39, shade, .21)
+    sheetGlow(context, cobalt, .89, .56, .39, shade, .21 * (1 - daylight * .78))
     sheetGlow(context, cobalt, cloudX, heightAt(cobalt, cloudX) + .015, .33, shade, climate.cloudCover * .30)
-    sheetGlow(context, cobalt, sunX + .06, .47, .31, accent, climate.sunlight * .17)
+    sheetGlow(context, cobalt, sunX, heightAt(cobalt, sunX) + .040, .22, accent, daylight * .12)
     ribbon(context, cobalt, .004, .006, gradient(context, [.18, .48, 1, .26], [air, satin, satin, air], FOUR, [0, .51, .29, 0]))
 
     sheet(context, current, 0, gradient(context, [.11, .71, .91, .53], palette.current, FIVE))
     sheetGlow(context, current, shineX - .06, heightAt(current, shineX - .06) + .064, .32, satin, .25 * sheen + glint * .10)
     sheetGlow(context, current, cloudX + .12, heightAt(current, cloudX + .12) + .081, .36, shade, climate.cloudCover * .34)
-    sheetGlow(context, current, sunX + .12, heightAt(current, sunX + .12) + .036, .24, accent, climate.sunlight * .20)
+    sheetGlow(context, current, sunX + .035, heightAt(current, sunX + .035) + .045, .25, accent, daylight * .18)
     ribbon(context, current, -.011, .087, gradient(context, [.04, .8, .98, .37], [air, air, satin, satin], FOUR, [0, .23, .25, .08]))
     ribbon(context, current, .001, .027 + .0019 * glint, gradient(context, [.13, .7, .97, .48], palette.foam, FIVE, [.08, .42, .90, .56, .13]))
     const shimmer = glint > .002 ? bend(current, t * 1.5, glint * .08, 2.9, glint * .25) : current
@@ -334,8 +351,8 @@ export function createBackground(canvas: HTMLCanvasElement) {
     ribbon(context, fold, .008, .004, gradient(context, [.26, .9, 1, .66], [air, satin, air], [0, .42, 1], [0, .57, 0]))
 
     sheet(context, undertow, 0, gradient(context, [.12, .92, 1, .98], palette.undertow, FOUR))
-    glow(context, .03, .21, .37, [6, 14, 30], .63)
-    glow(context, .98, .025, .34, [5, 16, 35], .52)
+    glow(context, .03, .21, .37, [6, 14, 30], .63 * (1 - daylight))
+    glow(context, .98, .025, .34, [5, 16, 35], .52 * (1 - daylight))
 
     context.setTransform(canvas.width / width, 0, 0, canvas.height / height, 0, 0)
     if (climate.rainfall > .002) paintRain(context, current, width, height, time, climate.rainfall, detail, palette.foam[2])

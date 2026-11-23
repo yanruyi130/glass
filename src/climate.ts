@@ -34,25 +34,25 @@ function palette(colors: Record<ColorBand, string>): Palette {
 
 export const WEATHER_PRESETS: Record<WeatherId, Climate> = {
   sunny: {
-    flowSpeed: .95, waveAmplitude: 1, sunlight: .9, cloudCover: .02, rainfall: 0, snowfall: 0,
-    surfaceRain: 0, frost: 0, rimLight: 1.08, rimTint: [1, .88, .66],
-    glass: { tint: .125, tintColor: [1, .974, .923], saturation: 1.37, brightness: 1.06 },
+    flowSpeed: .95, waveAmplitude: 1, sunlight: 1, cloudCover: 0, rainfall: 0, snowfall: 0,
+    surfaceRain: 0, frost: 0, rimLight: .95, rimTint: [1, .961, .895],
+    glass: { tint: .038, tintColor: [.99, .994, 1], saturation: 1, brightness: 1, blurScale: .65, shadowScale: .52 },
     palette: palette({
-      sky: '09172e 11294f 205581 3987a1',
-      distant: '112c5c 1d4c88 22508e 185579',
-      cobalt: '18468c 255fc2 2c84d1 287ebd 19567f',
-      current: '1a448d 2e90ce 4bbed1 288db1 1b668b',
-      foam: 'a8d9e5 aae4ec fff1c7 d4eeea 9ed4dc',
-      foldRim: '1a579b 37a5c7 268aa6 176281',
-      fold: '173b88 21669d 265e86 0e3c60',
-      undertow: '102856 124376 183c73 153457',
-      light: '3a99ec 72e4e9 ffe0a2',
+      sky: '238CDC 4FB7F1 8AD6F9 B9EAFB',
+      distant: '419EDC 71C7EC 83D5F2 75CBEC',
+      cobalt: '298ED6 46A9E9 56BBEB 65C9ED 51B2E0',
+      current: '309EDA 57BCEB 8BDFF3 67CBE8 4CB8E4',
+      foam: 'ADDBF3 C9F0FC F8FCFF E3F7FD B8EAF8',
+      foldRim: '44B0DD 77D7EB 79CDEB 5BBBE4',
+      fold: '258CD4 4DB1E8 58B7DE 47A4D9',
+      undertow: '217CC5 2D96D2 329BD6 2B8ACE',
+      light: '79CEFB B7F2F9 FFF2CE',
     }),
   },
   cloudy: {
     flowSpeed: .68, waveAmplitude: .79, sunlight: 0, cloudCover: .86, rainfall: 0, snowfall: 0,
     surfaceRain: 0, frost: 0, rimLight: .74, rimTint: [.77, .83, .94],
-    glass: { tint: .12, tintColor: [.76, .81, .93], saturation: 1.16, brightness: 1.01 },
+    glass: { tint: .12, tintColor: [.76, .81, .93], saturation: 1.16, brightness: 1.01, blurScale: 1, shadowScale: 1 },
     palette: palette({
       sky: '171e35 27334b 48546d 677687',
       distant: '232a49 3b4268 4c5277 374860',
@@ -68,7 +68,7 @@ export const WEATHER_PRESETS: Record<WeatherId, Climate> = {
   rainy: {
     flowSpeed: .76, waveAmplitude: .92, sunlight: 0, cloudCover: .56, rainfall: .73, snowfall: 0,
     surfaceRain: 1, frost: 0, rimLight: .89, rimTint: [.71, .89, .97],
-    glass: { tint: .20, tintColor: [.10, .20, .26], saturation: 1.24, brightness: .85 },
+    glass: { tint: .20, tintColor: [.10, .20, .26], saturation: 1.24, brightness: .85, blurScale: 1, shadowScale: 1 },
     palette: palette({
       sky: '081624 102636 194353 315f71',
       distant: '10263c 173b5b 214658 193e55',
@@ -84,7 +84,7 @@ export const WEATHER_PRESETS: Record<WeatherId, Climate> = {
   snow: {
     flowSpeed: .57, waveAmplitude: .67, sunlight: 0, cloudCover: .18, rainfall: 0, snowfall: .83,
     surfaceRain: 0, frost: .88, rimLight: 1.03, rimTint: [.79, .93, 1],
-    glass: { tint: .10, tintColor: [.86, .96, 1], saturation: 1.23, brightness: 1.035 },
+    glass: { tint: .10, tintColor: [.86, .96, 1], saturation: 1.23, brightness: 1.035, blurScale: 1, shadowScale: 1 },
     palette: palette({
       sky: '0d1e3b 233d62 476989 7195a9',
       distant: '233d63 436f9d 5b8db5 416f92',
@@ -121,6 +121,8 @@ export function blendClimate(from: Climate, to: Climate, amount: number): Climat
       tintColor: color(from.glass.tintColor, to.glass.tintColor),
       saturation: mix(from.glass.saturation, to.glass.saturation, t),
       brightness: mix(from.glass.brightness, to.glass.brightness, t),
+      blurScale: mix(from.glass.blurScale, to.glass.blurScale, t),
+      shadowScale: mix(from.glass.shadowScale, to.glass.shadowScale, t),
     },
   }
 }

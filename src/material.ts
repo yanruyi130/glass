@@ -16,12 +16,16 @@ export interface Material {
 }
 
 export interface EffectiveMaterial {
+  blur: number
+  shadow: number
   tint: number
   saturation: number
   brightness: number
 }
 
-export interface WeatherGlass extends EffectiveMaterial {
+export interface WeatherGlass extends Omit<EffectiveMaterial, 'blur' | 'shadow'> {
+  blurScale: number
+  shadowScale: number
   tintColor: readonly [number, number, number]
 }
 
@@ -43,6 +47,8 @@ export function prefersLightInk(luminance: number, previous?: boolean) {
 
 export function effectiveMaterial(material: Material, weather: WeatherGlass): EffectiveMaterial {
   return {
+    blur: material.blur * weather.blurScale,
+    shadow: material.shadow * weather.shadowScale,
     tint: clamp(weather.tint * material.tint, 0, .76),
     saturation: weather.saturation * material.saturation,
     brightness: weather.brightness * material.brightness,

@@ -36,7 +36,7 @@ const layers: {
     translation: '投影',
     description: '透明薄片投下柔和的阴影，表现玻璃与背景的距离。',
     controls: [
-      { key: 'shadow', label: '阴影强度', min: 0, max: 1.5, step: .01, format: percentage },
+      { key: 'shadow', label: '阴影强度', min: 0, max: 1.5, step: .01, format: (_, effective) => percentage(effective.shadow) },
     ],
   },
   {
@@ -45,7 +45,7 @@ const layers: {
     translation: '模糊与提亮',
     description: '保留背景色块与曲线，以轻微模糊、饱和度和亮度调整形成透射层。',
     controls: [
-      { key: 'blur', label: '模糊半径', min: 0, max: 6, step: .25, format: pixels },
+      { key: 'blur', label: '模糊半径', min: 0, max: 6, step: .25, format: (_, effective) => pixels(Number(effective.blur.toFixed(2))) },
       { key: 'saturation', label: '饱和度', min: .45, max: 1.45, step: .01, format: (_, effective) => percentage(effective.saturation) },
       { key: 'brightness', label: '亮度', min: .5, max: 1.45, step: .01, format: (_, effective) => percentage(effective.brightness) },
     ],
