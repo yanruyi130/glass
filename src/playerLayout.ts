@@ -16,6 +16,11 @@ export interface PlayerLayout {
 
 const region = (x: number, y: number, width: number, height: number): FrostClearRegion => ({ x, y, width, height })
 
+const REEL_SCALE = 1.28
+const REEL_WIDTH = .158 * REEL_SCALE
+const REEL_HEIGHT = .255 * REEL_SCALE
+const cassetteReel = (centerX: number) => region(centerX - REEL_WIDTH / 2, .4625 - REEL_HEIGHT / 2, REEL_WIDTH, REEL_HEIGHT)
+
 /** Normalized glass-local coordinates with a top-left origin. */
 const layouts: Record<ShapeId, PlayerLayout> = {
   'rounded-rectangle': {
@@ -29,7 +34,7 @@ const layouts: Record<ShapeId, PlayerLayout> = {
     mark: region(.073, .115, .045, .10),
     trackText: region(.14, .097, .54, .16),
     library: region(.729, .10, .145, .135),
-    reels: [region(.245, .335, .158, .255), region(.597, .335, .158, .255)],
+    reels: [cassetteReel(.324), cassetteReel(.676)],
     tapePath: region(.19, .29, .62, .345),
     progress: region(.14, .704, .72, .047),
     transport: region(.44, .793, .12, .158),
