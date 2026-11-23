@@ -8,6 +8,7 @@ export interface BackgroundFrame {
   time: number
   phase: number
   cloudTime: number
+  cloudDriftTime: number
   climate: Climate
   audio: AudioInput
   detail: number
@@ -53,9 +54,17 @@ function paintSun(context: CanvasRenderingContext2D, x: number, y: number, aspec
   context.save()
   context.translate(x, y)
   context.scale(1 / aspect, 1)
-  glow(context, 0, 0, .23, [255, 246, 213], daylight * .27)
-  glow(context, 0, 0, .092, [255, 250, 234], daylight * .42)
-  glow(context, 0, 0, .030, [255, 251, 232], daylight * .83)
+  glow(context, 0, 0, .24, [255, 246, 218], daylight * .23)
+  glow(context, 0, 0, .112, [255, 249, 226], daylight * .38)
+
+  const radius = .048 * Math.min(1, aspect / .72)
+  const disk = context.createRadialGradient(0, 0, 0, 0, 0, radius)
+  disk.addColorStop(0, rgba([255, 254, 246], daylight * .98))
+  disk.addColorStop(.67, rgba([255, 253, 241], daylight * .95))
+  disk.addColorStop(.86, rgba([255, 248, 223], daylight * .78))
+  disk.addColorStop(1, rgba([255, 246, 214], 0))
+  context.fillStyle = disk
+  context.fillRect(-radius, -radius, radius * 2, radius * 2)
   context.restore()
 }
 
@@ -181,7 +190,17 @@ function cloudStamp(seed: number, depth: number) {
   return canvas
 }
 
-function paintClouds(context: CanvasRenderingContext2D, stamps: readonly HTMLCanvasElement[], time: number, amount: number) {
+function driftCloud(x: number, width: number, distance: number) {
+  if (distance === 0) return x
+  const margin = .08
+  const span = 1 + width + margin * 2
+  return wrap((x + width + margin + distance) / span) * span - width - margin
+}
+
+function paintClouds(
+  context: CanvasRenderingContext2D, stamps: readonly HTMLCanvasElement[],
+  time: number, driftTime: number, amount: number,
+) {
   const banks = [
     [-.48, .035, 1.1, .31, .33, .043],
     [.34, .083, .94, .27, .46, -.054],
@@ -189,10 +208,14 @@ function paintClouds(context: CanvasRenderingContext2D, stamps: readonly HTMLCan
     [.41, .205, .86, .32, .62, -.086],
   ]
   context.save()
-  for (const [index, [x, y, w, h, alpha, glide]] of banks.entries()) {
-    const n = time * (.056 + index * .012) + 1.19 * index
+  for (const [index, [homeX, y, w, h, alpha, glide]] of banks.entries()) {
+    const rate = .056 + index * .012
+    const phase = 1.19 * index
+    const sway = Math.sin((time - driftTime) * rate + phase) * glide
+    const x = driftCloud(homeX + sway, w, driftTime * Math.abs(glide) * rate)
+    const rise = Math.sin((time * rate + phase) * .76) * .011
     context.globalAlpha = alpha * amount
-    context.drawImage(stamps[index % stamps.length], x + Math.sin(n) * glide, y + Math.sin(n * .76) * .011, w, h)
+    context.drawImage(stamps[index % stamps.length], x, y + rise, w, h)
   }
   context.restore()
 }
@@ -275,7 +298,7 @@ export function createBackground(canvas: HTMLCanvasElement) {
     if (canvas.height !== pixelHeight) canvas.height = pixelHeight
   }
 
-  function render({ time, phase, cloudTime, climate, audio, detail }: BackgroundFrame) {
+  function render({ time, phase, cloudTime, cloudDriftTime, climate, audio, detail }: BackgroundFrame) {
     const narrow = clamp((1.9 - width / height) / 1.2)
     const t = phase * .178
     const amplitude = climate.waveAmplitude * (1 + .29 * audio.low * audio.energy)
@@ -306,11 +329,13 @@ export function createBackground(canvas: HTMLCanvasElement) {
     const palette = climate.palette
     const [air, satin, accent] = palette.light
     const shade: Rgb = [mix(11, 67, daylight), mix(22, 139, daylight), mix(45, 183, daylight)]
-    const sunX = .676 + .018 * Math.sin(t * .47)
-    const sunY = .164 + .009 * Math.cos(t * .57) + narrow * .022
+    const sunX = .885 - narrow * .028
+    const sunY = Math.max(.201 + narrow * .039, 115 / height)
     const shineX = .60 + .083 * Math.sin(t * .74 + .32)
     const sheen = .94 + .06 * Math.sin(t * 1.28)
-    const cloudX = .49 + .17 * Math.sin(cloudTime * .048 + 2.1)
+    const cloudCenter = .49 + .17 * Math.sin((cloudTime - cloudDriftTime) * .048 + 2.1)
+    const shadowExtent = .48
+    const cloudX = driftCloud(cloudCenter - shadowExtent, shadowExtent * 2, cloudDriftTime * .17 * .048) + shadowExtent
 
     context.setTransform(canvas.width, 0, 0, canvas.height, 0, 0)
     context.fillStyle = gradient(context, [.12, 0, .85, 1], palette.sky, SKY)
@@ -324,7 +349,7 @@ export function createBackground(canvas: HTMLCanvasElement) {
     }
     if (climate.cloudCover > .035) {
       clouds ??= [cloudStamp(23, .15), cloudStamp(71, .87)]
-      paintClouds(context, clouds, cloudTime, climate.cloudCover)
+      paintClouds(context, clouds, cloudTime, cloudDriftTime, climate.cloudCover)
     }
 
     sheet(context, cobalt, -.043, gradient(context, [0, .36, 1, .71], palette.distant, FOUR))

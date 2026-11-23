@@ -15,6 +15,7 @@ export interface Climate {
   sunlight: number
   cloudCover: number
   cloudSpeed: number
+  cloudDrift: number
   rainfall: number
   snowfall: number
   surfaceRain: number
@@ -35,7 +36,7 @@ function palette(colors: Record<ColorBand, string>): Palette {
 
 export const WEATHER_PRESETS: Record<WeatherId, Climate> = {
   sunny: {
-    flowSpeed: .95, waveAmplitude: 1, sunlight: 1, cloudCover: 0, cloudSpeed: 1, rainfall: 0, snowfall: 0,
+    flowSpeed: .95, waveAmplitude: 1, sunlight: 1, cloudCover: 0, cloudSpeed: 1, cloudDrift: 0, rainfall: 0, snowfall: 0,
     surfaceRain: 0, frost: 0, rimLight: .95, rimTint: [1, .961, .895],
     glass: { tint: .038, tintColor: [.99, .994, 1], saturation: 1, brightness: 1, blurScale: .65, shadowScale: .52 },
     palette: palette({
@@ -51,7 +52,7 @@ export const WEATHER_PRESETS: Record<WeatherId, Climate> = {
     }),
   },
   cloudy: {
-    flowSpeed: .68, waveAmplitude: .79, sunlight: 0, cloudCover: .86, cloudSpeed: 1.6, rainfall: 0, snowfall: 0,
+    flowSpeed: .68, waveAmplitude: .79, sunlight: 0, cloudCover: .86, cloudSpeed: 2.88, cloudDrift: 1, rainfall: 0, snowfall: 0,
     surfaceRain: 0, frost: 0, rimLight: .74, rimTint: [.77, .83, .94],
     glass: { tint: .12, tintColor: [.76, .81, .93], saturation: 1.16, brightness: 1.01, blurScale: 1, shadowScale: 1 },
     palette: palette({
@@ -67,7 +68,7 @@ export const WEATHER_PRESETS: Record<WeatherId, Climate> = {
     }),
   },
   rainy: {
-    flowSpeed: .76, waveAmplitude: .92, sunlight: 0, cloudCover: .56, cloudSpeed: 1, rainfall: .73, snowfall: 0,
+    flowSpeed: .76, waveAmplitude: .92, sunlight: 0, cloudCover: .56, cloudSpeed: 1, cloudDrift: 0, rainfall: .73, snowfall: 0,
     surfaceRain: 1, frost: 0, rimLight: .89, rimTint: [.71, .89, .97],
     glass: { tint: .20, tintColor: [.10, .20, .26], saturation: 1.24, brightness: .85, blurScale: 1, shadowScale: 1 },
     palette: palette({
@@ -83,7 +84,7 @@ export const WEATHER_PRESETS: Record<WeatherId, Climate> = {
     }),
   },
   snow: {
-    flowSpeed: .57, waveAmplitude: .67, sunlight: 0, cloudCover: .18, cloudSpeed: 1, rainfall: 0, snowfall: .83,
+    flowSpeed: .57, waveAmplitude: .67, sunlight: 0, cloudCover: .18, cloudSpeed: 1, cloudDrift: 0, rainfall: 0, snowfall: .83,
     surfaceRain: 0, frost: .88, rimLight: 1.03, rimTint: [.79, .93, 1],
     glass: { tint: .10, tintColor: [.86, .96, 1], saturation: 1.23, brightness: 1.035, blurScale: 1, shadowScale: 1 },
     palette: palette({
@@ -114,7 +115,7 @@ export function blendClimate(from: Climate, to: Climate, amount: number): Climat
   return {
     palette,
     flowSpeed: number('flowSpeed'), waveAmplitude: number('waveAmplitude'), sunlight: number('sunlight'),
-    cloudCover: number('cloudCover'), cloudSpeed: number('cloudSpeed'), rainfall: number('rainfall'), snowfall: number('snowfall'),
+    cloudCover: number('cloudCover'), cloudSpeed: number('cloudSpeed'), cloudDrift: number('cloudDrift'), rainfall: number('rainfall'), snowfall: number('snowfall'),
     surfaceRain: number('surfaceRain'), frost: number('frost'), rimLight: number('rimLight'),
     rimTint: color(from.rimTint, to.rimTint),
     glass: {

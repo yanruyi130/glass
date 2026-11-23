@@ -1,9 +1,9 @@
 type Puff = readonly [x: number, y: number, radiusX: number, radiusY: number]
 
 const CLOUDS = [
-  { seed: 31, x: -.083, y: .064, width: .355, height: .206, speed: .0014, opacity: .82 },
-  { seed: 67, x: .257, y: .176, width: .421, height: .262, speed: .0020, opacity: .98 },
-  { seed: 14, x: .792, y: .202, width: .297, height: .160, speed: .0011, opacity: .79 },
+  { seed: 31, x: -.083, y: .064, width: .355, height: .206, speed: .00644, opacity: .82 },
+  { seed: 67, x: .257, y: .176, width: .421, height: .262, speed: .0105, opacity: .98 },
+  { seed: 14, x: .792, y: .228, width: .297, height: .160, speed: .00784, opacity: .79 },
 ] as const
 
 function hash(x: number, y: number, seed: number) {
