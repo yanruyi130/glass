@@ -4,6 +4,7 @@ export interface ShapeGeometry { width: number; height: number; radius: number }
 export interface GlassShape {
   size(stageWidth: number): ShapeGeometry
   distance(point: Point, geometry: ShapeGeometry): number
+  outline(geometry: ShapeGeometry): Point[]
   distanceGLSL: string
 }
 
@@ -17,6 +18,15 @@ export const roundedRectangle: GlassShape = {
     const dx = Math.abs(x) - width / 2 + radius
     const dy = Math.abs(y) - height / 2 + radius
     return Math.hypot(Math.max(dx, 0), Math.max(dy, 0)) + Math.min(Math.max(dx, dy), 0) - radius
+  },
+  outline({ width, height, radius }) {
+    const right = width / 2 - radius
+    const bottom = height / 2 - radius
+    const corners = [[right, -bottom], [right, bottom], [-right, bottom], [-right, -bottom]]
+    return corners.flatMap(([x, y], corner) => Array.from({ length: 13 }, (_, step) => {
+      const angle = (corner - 1 + step / 12) * Math.PI / 2
+      return { x: x + Math.cos(angle) * radius, y: y + Math.sin(angle) * radius }
+    }))
   },
   distanceGLSL: `
 float contour(vec2 p, vec2 halfSize, float r) {

@@ -1,12 +1,17 @@
-import { clamp } from './material'
+import { Euler, PerspectiveCamera, Plane, Quaternion, Raycaster, Vector2, Vector3, MathUtils } from 'three'
 import type { GlassShape, Point, ShapeGeometry } from './shape'
 
-type Vector = [number, number, number]
-export const CAMERA = 1150
+const CAMERA_DISTANCE = 1150
+export const PITCH_RANGE = .82
+export const YAW_RANGE = 1.05
+
+export interface ViewRotation { pitch: number; yaw: number }
 
 export interface Projection {
-  center: Point
-  axes: [Vector, Vector, Vector]
+  width: number
+  height: number
+  camera: PerspectiveCamera
+  orientation: Quaternion
   geometry: ShapeGeometry
   scale: number
   spread: number
@@ -16,12 +21,9 @@ export interface Projection {
 export const layerDepth = (projection: Projection, index: number) => (index - 2.5) * projection.spread
 
 export function project(projection: Projection, point: Point, depth: number): Point {
-  const { axes: [u, v, n], scale, center } = projection
-  const x = (u[0] * point.x + v[0] * point.y + n[0] * depth) * scale
-  const y = (u[1] * point.x + v[1] * point.y + n[1] * depth) * scale
-  const z = (u[2] * point.x + v[2] * point.y + n[2] * depth) * scale
-  const w = 1 - z / CAMERA
-  return { x: center.x + x / w, y: center.y + y / w }
+  const { orientation, scale, camera, width, height } = projection
+  const pointInView = new Vector3(point.x, -point.y, depth).multiplyScalar(scale).applyQuaternion(orientation).project(camera)
+  return { x: (1 + pointInView.x) * width / 2, y: (1 - pointInView.y) * height / 2 }
 }
 
 export function projectedBounds(projection: Projection) {
@@ -35,42 +37,52 @@ export function projectedBounds(projection: Projection) {
   }
 }
 
-export function makeProjection(width: number, height: number, shape: GlassShape, open: number, gap: number, offset: Point): Projection {
-  const tilt = open * .95
-  const rotation = open * -.32
-  const cx = Math.cos(tilt), sx = Math.sin(tilt), cz = Math.cos(rotation), sz = Math.sin(rotation)
+export function makeProjection(width: number, height: number, shape: GlassShape, open: number, gap: number, view: ViewRotation): Projection {
+  const fov = MathUtils.radToDeg(2 * Math.atan(height / (2 * CAMERA_DISTANCE)))
+  const camera = new PerspectiveCamera(fov, width / height, 1, CAMERA_DISTANCE * 3)
+  camera.position.z = CAMERA_DISTANCE
+  camera.updateMatrixWorld()
+
+  const baseTilt = open * .95
+  const pitchRange = view.pitch >= 0 ? Math.min(PITCH_RANGE, 1.19 - baseTilt) : PITCH_RANGE - open * .17
+  const tilt = baseTilt + view.pitch * pitchRange / PITCH_RANGE
+  const orientation = new Quaternion().setFromEuler(new Euler(-tilt, view.yaw, open * .32, 'ZYX'))
   const projection: Projection = {
-    center: { x: 0, y: 0 }, geometry: shape.size(width), scale: 1,
-    axes: [[cz, sz, 0], [-sz * cx, cz * cx, sx], [sz * sx, -cz * sx, cx]],
-    spread: open * gap, open,
+    width, height, camera, orientation, geometry: shape.size(width), scale: 1, spread: open * gap, open,
   }
   const side = width < 600 ? 11 : 22
-  const top = 68
-  const bottom = 23
-  const extent = projectedBounds(projection)
-  projection.scale = Math.min(1, (width - 2 * side) / (extent.right - extent.left), (height - top - bottom) / (extent.bottom - extent.top))
-  const bounds = projection.scale < 1 ? projectedBounds(projection) : extent
-  projection.center = {
-    x: clamp(width / 2 + offset.x, side - bounds.left, Math.max(side - bounds.left, width - side - bounds.right)),
-    y: clamp(height * .5 + offset.y, top - bounds.top, Math.max(top - bounds.top, height - bottom - bounds.bottom)),
+  const fits = () => {
+    const bounds = projectedBounds(projection)
+    return bounds.left >= side && bounds.right <= width - side && bounds.top >= 68 && bounds.bottom <= height - 23
+  }
+  // Fit wide angles on a phone by scaling uniformly around the fixed pivot.
+  if (!fits()) {
+    let low = 0, high = 1
+    for (let i = 0; i < 8; i++) {
+      projection.scale = (low + high) / 2
+      if (fits()) low = projection.scale
+      else high = projection.scale
+    }
+    projection.scale = low
   }
   return projection
 }
 
-/** Invert the planar homography at the layer's plane, then test its actual contour. */
+/** Intersect each rendered plane in world space before testing its rounded mask. */
 export function hitLayer(projection: Projection, shape: GlassShape, point: Point): number {
-  const { axes: [u, v, n], center, scale, geometry } = projection
-  const x = point.x - center.x
-  const y = point.y - center.y
-  const a = u[0] + x * u[2] / CAMERA, b = v[0] + x * v[2] / CAMERA
-  const c = u[1] + y * u[2] / CAMERA, d = v[1] + y * v[2] / CAMERA
-  const determinant = a * d - b * c
+  const { width, height, camera, orientation, scale, geometry } = projection
+  const raycaster = new Raycaster()
+  raycaster.setFromCamera(new Vector2(point.x / width * 2 - 1, 1 - point.y / height * 2), camera)
+  const normal = new Vector3(0, 0, 1).applyQuaternion(orientation)
+  const inverse = orientation.clone().invert()
+  const plane = new Plane()
+  const intersection = new Vector3()
   for (let index = 5; index >= 0; index--) {
-    const depth = layerDepth(projection, index)
-    const h = x / scale - depth * (n[0] + x * n[2] / CAMERA)
-    const k = y / scale - depth * (n[1] + y * n[2] / CAMERA)
-    const local = { x: (h * d - b * k) / determinant, y: (a * k - h * c) / determinant }
-    if (shape.distance(local, geometry) < 4) return index
+    plane.normal.copy(normal)
+    plane.constant = -layerDepth(projection, index) * scale
+    if (!raycaster.ray.intersectPlane(plane, intersection)) continue
+    intersection.applyQuaternion(inverse).divideScalar(scale)
+    if (shape.distance({ x: intersection.x, y: -intersection.y }, geometry) < 4) return index
   }
   return -1
 }

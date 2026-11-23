@@ -95,7 +95,7 @@ export function App() {
       </header>
       <div className="stage-caption" aria-hidden="true">
         <span><span className="stage-caption-dot" />{expanded ? '六层展开' : '玻璃样本'}</span>
-        <span>{expanded ? '拖动整体 · 点击薄片' : '拖动玻璃 · 双击归位'}</span>
+        <span>{expanded ? '按住拖动旋转 · 点击薄片' : '按住拖动旋转 · 双击复位'}</span>
       </div>
     </section>
     <MaterialPanel expanded={expanded} selected={selected} gap={gap} material={material} effective={effective} ink={ink}

@@ -1,7 +1,8 @@
 /* WebGL blur, signed-distance lens and dispersion adapted from Glasswork by
  * Kubai087 (MIT). See public/licenses/glasswork-MIT.txt. */
+import { CanvasTexture, ExtrudeGeometry, Group, LinearFilter, LinearMipmapLinearFilter, Matrix4, Mesh, MeshBasicMaterial, PlaneGeometry, Scene, ShaderMaterial, Shape, Vector2, Vector3, Vector4, WebGLRenderer } from 'three'
 import { LAYERS, type EffectiveMaterial, type LayerId, type Material } from './material'
-import { CAMERA, layerDepth, type Projection } from './projection'
+import { layerDepth, type Projection } from './projection'
 import type { GlassShape, ShapeGeometry } from './shape'
 
 export type SurfaceEffect = (context: CanvasRenderingContext2D, geometry: ShapeGeometry, time: number) => void
@@ -19,33 +20,13 @@ interface Frame {
   surfaceEffect: SurfaceEffect | null
 }
 
-const projectionGLSL = `
-uniform vec2 u_view, u_center, u_half;
-uniform mat3 u_axes;
-uniform float u_scale, u_depth;
-vec3 world(vec2 point) {
-  return u_axes * vec3(point, u_depth) * u_scale;
-}
-float perspective(vec3 p) {
-  return 1.0 - p.z / ${CAMERA.toFixed(1)};
-}
-vec2 screenPoint(vec2 point) {
-  vec3 p = world(point);
-  return u_center + p.xy / perspective(p);
-}`
-
 const vertex = `
-precision highp float;
-attribute vec2 a_corner;
 varying vec2 v_local;
+uniform vec2 u_half;
 uniform float u_pad;
-${projectionGLSL}
 void main() {
-  v_local = a_corner * (u_half + u_pad);
-  vec3 p = world(v_local);
-  float w = perspective(p);
-  vec2 viewport = (u_center * w + p.xy) / u_view * 2.0 - w;
-  gl_Position = vec4(viewport.x, -viewport.y, 0.0, w);
+  v_local = vec2(position.x, -position.y) * (u_half + u_pad);
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }`
 
 const fragment = (shape: GlassShape) => `
@@ -55,10 +36,18 @@ uniform sampler2D u_background, u_ink, u_surface;
 uniform float u_radius, u_open, u_weight, u_emphasis, u_aa;
 uniform float u_inkBrightness;
 uniform int u_layer;
+uniform vec2 u_view, u_half;
+uniform float u_pad;
 uniform vec3 u_tone;
 uniform vec4 u_lens, u_style;
-${projectionGLSL}
+uniform mat4 u_localToClip;
 ${shape.distanceGLSL}
+
+vec2 screenPoint(vec2 point) {
+  vec2 p = vec2(point.x, -point.y) / (u_half + u_pad);
+  vec4 clip = u_localToClip * vec4(p, 0.0, 1.0);
+  return (vec2(clip.x, -clip.y) / clip.w * 0.5 + 0.5) * u_view;
+}
 
 vec3 scene(vec2 p) {
   return texture2D(u_background, clamp(p / u_view, 0.0, 1.0)).rgb;
@@ -102,7 +91,8 @@ float band(float x, float center, float width) {
 void main() {
   vec2 p = v_local;
   float d = distanceAt(p);
-  float inside = 1.0 - smoothstep(-u_aa, u_aa, d);
+  float aa = max(u_aa * 0.75, fwidth(d) * 0.55);
+  float inside = 1.0 - smoothstep(-aa, aa, d);
   float depth = max(0.0, -d);
   vec2 uv = p / (u_half * 2.0) + 0.5;
   float openGuide = smoothstep(0.14, 0.86, u_open);
@@ -179,24 +169,13 @@ void main() {
   gl_FragColor = vec4(contribution, alpha);
 }`
 
-function compile(gl: WebGLRenderingContext, type: number, source: string) {
-  const shader = gl.createShader(type)!
-  gl.shaderSource(shader, source)
-  gl.compileShader(shader)
-  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader) ?? 'Shader compilation failed')
-  return shader
-}
-
-function texture(gl: WebGLRenderingContext, unit: number) {
-  gl.activeTexture(gl.TEXTURE0 + unit)
-  const handle = gl.createTexture()
-  gl.bindTexture(gl.TEXTURE_2D, handle)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(4))
-  return handle
+function canvasTexture(canvas: HTMLCanvasElement) {
+  const texture = new CanvasTexture(canvas)
+  texture.flipY = false
+  texture.minFilter = LinearFilter
+  texture.magFilter = LinearFilter
+  texture.generateMipmaps = false
+  return texture
 }
 
 function inkMask(context: CanvasRenderingContext2D, geometry: ShapeGeometry) {
@@ -220,119 +199,179 @@ function inkMask(context: CanvasRenderingContext2D, geometry: ShapeGeometry) {
   context.fillText('液态玻璃 · 圆角矩形', pad + 1, height - pad)
 }
 
+const EDGE_DEPTH = 4
+
+const edgeVertex = `
+varying vec3 v_normal;
+varying float v_depth;
+void main() {
+  v_normal = normalMatrix * normal;
+  v_depth = position.z / ${EDGE_DEPTH.toFixed(1)};
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}`
+
+const edgeFragment = `
+uniform sampler2D u_background;
+uniform vec2 u_pixels;
+uniform float u_opacity, u_light;
+varying vec3 v_normal;
+varying float v_depth;
+void main() {
+  vec3 normal = normalize(v_normal);
+  vec2 uv = vec2(gl_FragCoord.x, u_pixels.y - gl_FragCoord.y) / u_pixels;
+  vec2 shift = vec2(normal.x, -normal.y) * (3.0 + 3.0 * v_depth) / u_pixels;
+  vec3 transmission = texture2D(u_background, clamp(uv - shift, 0.0, 1.0)).rgb;
+  float key = max(0.0, dot(normal, normalize(vec3(-0.5, 0.75, 0.65))));
+  float glint = (0.10 + 0.33 * key) * u_light;
+  vec3 color = mix(transmission * (0.80 + 0.16 * v_depth), vec3(0.74, 0.91, 1.0), clamp(glint, 0.0, 0.72));
+  float alpha = u_opacity * (0.50 + 0.28 * key);
+  gl_FragColor = vec4(color * alpha, alpha);
+}`
+
+const compositing = {
+  transparent: true, premultipliedAlpha: true, depthTest: false, depthWrite: false, toneMapped: false,
+} as const
+
 export function createGlassRenderer(canvas: HTMLCanvasElement, shape: GlassShape) {
-  const context = canvas.getContext('webgl', { alpha: true, premultipliedAlpha: true, antialias: false })
-  if (!context) return null
-  const gl = context
-  const program = gl.createProgram()!
-  const vert = compile(gl, gl.VERTEX_SHADER, vertex)
-  const frag = compile(gl, gl.FRAGMENT_SHADER, fragment(shape))
-  gl.attachShader(program, vert)
-  gl.attachShader(program, frag)
-  gl.bindAttribLocation(program, 0, 'a_corner')
-  gl.linkProgram(program)
-  gl.deleteShader(vert)
-  gl.deleteShader(frag)
-  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program) ?? 'Shader linking failed')
-  gl.useProgram(program)
+  const renderer = new WebGLRenderer({ canvas, alpha: true, premultipliedAlpha: true, antialias: false, depth: false })
+  renderer.setClearAlpha(0)
+  const scene = new Scene()
+  const pivot = new Group()
+  scene.add(pivot)
 
-  const buffer = gl.createBuffer()
-  gl.bindBuffer(gl.ARRAY_BUFFER, buffer)
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW)
-  gl.enableVertexAttribArray(0)
-  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0)
-  gl.enable(gl.BLEND)
-  gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
-  gl.clearColor(0, 0, 0, 0)
-  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false)
-
-  const at = (name: string) => gl.getUniformLocation(program, 'u_' + name)
-  const u = {
-    view: at('view'), center: at('center'), half: at('half'), axes: at('axes'), scale: at('scale'),
-    depth: at('depth'), pad: at('pad'), radius: at('radius'), open: at('open'), weight: at('weight'),
-    emphasis: at('emphasis'), aa: at('aa'), layer: at('layer'), tone: at('tone'), lens: at('lens'), style: at('style'),
-    inkBrightness: at('inkBrightness'),
-  }
-  const textures = [texture(gl, 0), texture(gl, 1), texture(gl, 2)]
-  gl.uniform1i(at('background'), 0)
-  gl.uniform1i(at('ink'), 1)
-  gl.uniform1i(at('surface'), 2)
   const mask = document.createElement('canvas')
   const maskContext = mask.getContext('2d')!
   const surface = document.createElement('canvas')
   const surfaceContext = surface.getContext('2d')!
-
-  function upload(unit: number, source: HTMLCanvasElement) {
-    gl.activeTexture(gl.TEXTURE0 + unit)
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source)
+  const backgroundTexture = canvasTexture(document.createElement('canvas'))
+  const maskTexture = canvasTexture(mask)
+  maskTexture.generateMipmaps = true
+  maskTexture.minFilter = LinearMipmapLinearFilter
+  maskTexture.anisotropy = 4
+  const surfaceTexture = canvasTexture(surface)
+  const common = {
+    u_background: { value: backgroundTexture }, u_ink: { value: maskTexture }, u_surface: { value: surfaceTexture },
+    u_view: { value: new Vector2() }, u_half: { value: new Vector2() }, u_tone: { value: new Vector3() },
+    u_lens: { value: new Vector4() }, u_style: { value: new Vector4() },
+    u_radius: { value: 0 }, u_open: { value: 0 }, u_aa: { value: 0 }, u_inkBrightness: { value: 0 },
   }
+  const planeGeometry = new PlaneGeometry(2, 2)
+  const fragmentShader = fragment(shape)
 
-  function drawLayer(index: number, depth: number, weight: number, emphasized: boolean) {
-    gl.uniform1i(u.layer, index)
-    gl.uniform1f(u.depth, depth)
-    gl.uniform1f(u.pad, index === 0 ? 34 : 5)
-    gl.uniform1f(u.weight, weight)
-    gl.uniform1f(u.emphasis, Number(emphasized))
-    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
+  function createLayer(index: number, renderOrder = index) {
+    const uniforms = {
+      ...common, u_layer: { value: index }, u_pad: { value: index === 0 ? 34 : 5 },
+      u_weight: { value: 1 }, u_emphasis: { value: 0 }, u_localToClip: { value: new Matrix4() },
+    }
+    const material = new ShaderMaterial({ ...compositing, uniforms, vertexShader: vertex, fragmentShader })
+    const mesh = new Mesh(planeGeometry, material)
+    mesh.renderOrder = renderOrder
+    pivot.add(mesh)
+    return { mesh, uniforms }
   }
+  const layers = LAYERS.map((_, index) => createLayer(index))
+  const surfaceLayer = createLayer(6, 3.5)
+  const allPlanes = [...layers, surfaceLayer]
+  const viewProjection = new Matrix4()
 
-  let maskWidth = 0
-  let backgroundUploaded = false
+  const face = new MeshBasicMaterial({ visible: false })
+  const edgeUniforms = {
+    u_background: { value: backgroundTexture }, u_pixels: { value: new Vector2() },
+    u_opacity: { value: 1 }, u_light: { value: 1 },
+  }
+  const side = new ShaderMaterial({ ...compositing, uniforms: edgeUniforms, vertexShader: edgeVertex, fragmentShader: edgeFragment })
+  let edge: Mesh<ExtrudeGeometry, [MeshBasicMaterial, ShaderMaterial]> | null = null
+  let geometryWidth = 0
+
+  function updateShape(geometry: ShapeGeometry) {
+    mask.width = Math.ceil(geometry.width * 2)
+    mask.height = Math.ceil(geometry.height * 2)
+    maskContext.scale(mask.width / geometry.width, mask.height / geometry.height)
+    inkMask(maskContext, geometry)
+    maskTexture.needsUpdate = true
+    const outline = new Shape(shape.outline(geometry).map(({ x, y }) => new Vector2(x, -y)))
+    const extrusion = new ExtrudeGeometry(outline, { depth: EDGE_DEPTH, bevelEnabled: false })
+    if (edge) {
+      edge.geometry.dispose()
+      edge.geometry = extrusion
+    } else {
+      edge = new Mesh(extrusion, [face, side])
+      edge.renderOrder = 0.5
+      edge.position.z = -EDGE_DEPTH
+      pivot.add(edge)
+    }
+  }
 
   return {
     resize(width: number, height: number, ratio: number) {
-      canvas.width = Math.round(width * ratio)
-      canvas.height = Math.round(height * ratio)
-      gl.viewport(0, 0, canvas.width, canvas.height)
+      renderer.setPixelRatio(ratio)
+      renderer.setSize(width, height, false)
+      renderer.getDrawingBufferSize(edgeUniforms.u_pixels.value)
     },
     render(source: HTMLCanvasElement, backgroundChanged: boolean, frame: Frame) {
       const { projection, material, effective } = frame
-      const { geometry, center, axes, scale, open } = projection
-      if (backgroundChanged || !backgroundUploaded) {
-        upload(0, source)
-        backgroundUploaded = true
+      const { geometry, orientation, camera, scale, open } = projection
+      if (backgroundChanged || backgroundTexture.image !== source) {
+        backgroundTexture.image = source
+        backgroundTexture.needsUpdate = true
       }
-      if (maskWidth !== geometry.width) {
-        maskWidth = geometry.width
-        mask.width = Math.ceil(geometry.width * 2)
-        mask.height = Math.ceil(geometry.height * 2)
-        maskContext.scale(mask.width / geometry.width, mask.height / geometry.height)
-        inkMask(maskContext, geometry)
-        upload(1, mask)
+      if (geometryWidth !== geometry.width) {
+        geometryWidth = geometry.width
+        updateShape(geometry)
       }
+      surfaceLayer.mesh.visible = Boolean(frame.surfaceEffect)
       if (frame.surfaceEffect) {
         surface.width = Math.ceil(geometry.width * 2)
         surface.height = Math.ceil(geometry.height * 2)
         surfaceContext.scale(surface.width / geometry.width, surface.height / geometry.height)
         frame.surfaceEffect(surfaceContext, geometry, frame.time)
-        upload(2, surface)
+        surfaceTexture.needsUpdate = true
       }
 
-      gl.clear(gl.COLOR_BUFFER_BIT)
-      gl.uniform2f(u.view, frame.width, frame.height)
-      gl.uniform2f(u.center, center.x, center.y)
-      gl.uniform2f(u.half, geometry.width / 2, geometry.height / 2)
-      gl.uniformMatrix3fv(u.axes, false, axes.flat())
-      gl.uniform1f(u.scale, scale)
-      gl.uniform1f(u.radius, geometry.radius)
-      gl.uniform1f(u.open, open)
-      gl.uniform1f(u.aa, Math.max(.35, .62 / (canvas.width / frame.width * scale)))
-      gl.uniform3f(u.tone, material.blur, effective.saturation, effective.brightness)
-      gl.uniform4f(u.lens, material.rimWidth, material.edge, material.power, material.dispersion)
-      gl.uniform4f(u.style, material.shadow, effective.tint, material.light, frame.darkness)
-      gl.uniform1f(u.inkBrightness, frame.inkBrightness)
+      common.u_view.value.set(frame.width, frame.height)
+      common.u_half.value.set(geometry.width / 2, geometry.height / 2)
+      common.u_radius.value = geometry.radius
+      common.u_open.value = open
+      common.u_aa.value = Math.max(.35, .62 / (canvas.width / frame.width * scale))
+      common.u_tone.value.set(material.blur, effective.saturation, effective.brightness)
+      common.u_lens.value.set(material.rimWidth, material.edge, material.power, material.dispersion)
+      common.u_style.value.set(material.shadow, effective.tint, material.light, frame.darkness)
+      common.u_inkBrightness.value = frame.inkBrightness
 
-      for (const [index, layer] of LAYERS.entries()) {
-        if (index === 4 && frame.surfaceEffect) drawLayer(6, layerDepth(projection, 3), 1, false)
-        const emphasized = frame.selected === layer
-        const weight = frame.selected && !emphasized ? 1 - .64 * open : 1
-        drawLayer(index, layerDepth(projection, index), weight, emphasized)
+      pivot.quaternion.copy(orientation)
+      pivot.scale.setScalar(scale)
+      edgeUniforms.u_opacity.value = Math.max(0, 1 - open * 4)
+      edgeUniforms.u_light.value = material.light
+      if (edge) {
+        edge.visible = edgeUniforms.u_opacity.value > 0
+        edge.position.z = layerDepth(projection, 4) - EDGE_DEPTH
       }
+
+      for (const [index, { mesh, uniforms }] of allPlanes.entries()) {
+        const emphasized = frame.selected === LAYERS[index]
+        uniforms.u_weight.value = index < LAYERS.length && frame.selected && !emphasized ? 1 - .64 * open : 1
+        uniforms.u_emphasis.value = Number(emphasized)
+        const pad = uniforms.u_pad.value
+        mesh.scale.set(geometry.width / 2 + pad, geometry.height / 2 + pad, 1)
+        mesh.position.z = layerDepth(projection, index === LAYERS.length ? 3 : index)
+      }
+      pivot.updateMatrixWorld(true)
+      viewProjection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse)
+      for (const { mesh, uniforms } of allPlanes) {
+        uniforms.u_localToClip.value.multiplyMatrices(viewProjection, mesh.matrixWorld)
+      }
+      renderer.render(scene, camera)
     },
     destroy() {
-      textures.forEach(handle => gl.deleteTexture(handle))
-      gl.deleteBuffer(buffer)
-      gl.deleteProgram(program)
+      for (const { mesh } of allPlanes) mesh.material.dispose()
+      planeGeometry.dispose()
+      edge?.geometry.dispose()
+      face.dispose()
+      side.dispose()
+      backgroundTexture.dispose()
+      maskTexture.dispose()
+      surfaceTexture.dispose()
+      renderer.dispose()
     },
   }
 }

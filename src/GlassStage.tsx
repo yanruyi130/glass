@@ -1,13 +1,14 @@
 import { useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
 import { createBackground, type AudioInput } from './background'
 import { createGlassRenderer, type SurfaceEffect } from './glassRenderer'
-import { INITIAL_READING, LAYERS, effectiveMaterial, mix, pickMaterialMode, type EffectiveMaterial, type InkReading, type LayerId, type Material, type MaterialMode } from './material'
-import { hitLayer, makeProjection, projectedBounds, type Projection } from './projection'
+import { INITIAL_READING, LAYERS, clamp, effectiveMaterial, mix, pickMaterialMode, type EffectiveMaterial, type InkReading, type LayerId, type Material, type MaterialMode } from './material'
+import { PITCH_RANGE, YAW_RANGE, hitLayer, makeProjection, projectedBounds, type Projection, type ViewRotation } from './projection'
 import { GLASS_SHAPES, type Point, type ShapeId } from './shape'
 import { createBackgroundSampler, samplePositions } from './sampling'
 
 export const BACKGROUNDS = { currents: createBackground }
 export type BackgroundTheme = keyof typeof BACKGROUNDS
+const DEFAULT_VIEW: ViewRotation = { pitch: 0, yaw: 0 }
 
 interface Props {
   theme: BackgroundTheme
@@ -31,8 +32,8 @@ interface Props {
 
 interface StageSession {
   wake: () => void
-  move: (dx: number, dy: number) => void
-  recenter: () => void
+  rotate: (dx: number, dy: number) => void
+  resetOrientation: () => void
   hit: (point: Point) => number
 }
 
@@ -67,12 +68,13 @@ export function GlassStage(props: Props) {
     const shape = GLASS_SHAPES[shapeId]
     const background = BACKGROUNDS[theme](backgroundCanvas.current!)
     const read = createBackgroundSampler()
-    let renderer: ReturnType<typeof createGlassRenderer> = null
+    let renderer: ReturnType<typeof createGlassRenderer> | null = null
+    let contextLost = false
     function installRenderer() {
       try {
         renderer = createGlassRenderer(canvas, shape)
       } catch (error) {
-        console.error('Liquid glass shader initialization failed', error)
+        console.error('Liquid glass renderer initialization failed', error)
       }
       setUnavailable(!renderer)
     }
@@ -82,7 +84,7 @@ export function GlassStage(props: Props) {
     let resized = true, dirty = true, time = 0, previousBackground = 0, sampled = -Infinity
     let sampleDirty = true, trailingSample = 0
     let resetToken = latest.current.reset
-    let offset: Point = { x: 0, y: 0 }
+    let view = DEFAULT_VIEW
     let projection: Projection | null = null
     let openness = Number(latest.current.expanded), openFrom = openness, openTo = openness, openAt = 0
     let reading = INITIAL_READING, autoDark: boolean | undefined
@@ -101,17 +103,19 @@ export function GlassStage(props: Props) {
       if (width < 1 || height < 1) return
       const ratio = Math.min(window.devicePixelRatio || 1, 1.6, 1900 / width)
       background.resize(width, height, ratio)
-      renderer?.resize(width, height, ratio)
+      if (!contextLost) renderer?.resize(width, height, ratio)
       resized = true
       wake()
     }
     function lost(event: Event) {
       event.preventDefault()
-      renderer = null
+      contextLost = true
       setUnavailable(true)
     }
     function restored() {
-      installRenderer()
+      contextLost = false
+      if (renderer) setUnavailable(false)
+      else installRenderer()
       resize()
     }
 
@@ -122,7 +126,7 @@ export function GlassStage(props: Props) {
       const state = latest.current
       if (resetToken !== state.reset) {
         resetToken = state.reset
-        offset = { x: 0, y: 0 }
+        view = DEFAULT_VIEW
         reading = INITIAL_READING
         autoDark = undefined
         inkDark = undefined
@@ -149,9 +153,9 @@ export function GlassStage(props: Props) {
         previousBackground = 0
       }
 
-      const placementChanged = dirty || openness !== previousOpenness || !projection
-      if (placementChanged || !projection) {
-        projection = makeProjection(width, height, shape, openness, state.gap, offset)
+      const projectionChanged = dirty || openness !== previousOpenness || !projection
+      if (projectionChanged || !projection) {
+        projection = makeProjection(width, height, shape, openness, state.gap, view)
         const bounds = projectedBounds(projection)
         focus.style.left = bounds.left + 'px'
         focus.style.top = bounds.top + 'px'
@@ -159,7 +163,7 @@ export function GlassStage(props: Props) {
         focus.style.height = (bounds.bottom - bounds.top) + 'px'
       }
 
-      sampleDirty ||= placementChanged || backdropChanged
+      sampleDirty ||= projectionChanged || backdropChanged
       if (sampleDirty && (resized || now - sampled >= 78)) {
         const points = samplePositions(projection)
         reading = read(background.canvas, points, width, height)
@@ -211,7 +215,7 @@ export function GlassStage(props: Props) {
       }
       const toneChanged = !previousTone || previousTone.tint !== currentTone.tint || previousTone.brightness !== currentTone.brightness
         || previousTone.saturation !== currentTone.saturation || previousDarkness !== darkness || previousInkBrightness !== inkBrightness
-      if (placementChanged || backdropChanged || toneChanged) {
+      if (!contextLost && (projectionChanged || backdropChanged || toneChanged)) {
         const material = state.audio ? {
           ...state.material,
           edge: state.material.edge * (1 + state.audio.low * .1),
@@ -230,14 +234,15 @@ export function GlassStage(props: Props) {
 
     session.current = {
       wake,
-      move(dx, dy) {
-        if (!projection) return
-        offset = { x: projection.center.x - width / 2 + dx, y: projection.center.y - height * .5 + dy }
-        projection = makeProjection(width, height, shape, openness, latest.current.gap, offset)
+      rotate(dx, dy) {
+        view = {
+          pitch: clamp(view.pitch + dy * .01, -PITCH_RANGE, PITCH_RANGE),
+          yaw: clamp(view.yaw + dx * .01, -YAW_RANGE, YAW_RANGE),
+        }
         wake()
       },
-      recenter() {
-        offset = { x: 0, y: 0 }
+      resetOrientation() {
+        view = DEFAULT_VIEW
         wake()
       },
       hit(point) {
@@ -271,6 +276,8 @@ export function GlassStage(props: Props) {
     const point = position(event)
     const layer = session.current?.hit(point) ?? -1
     if (layer < 0) return
+    event.preventDefault()
+    event.currentTarget.focus({ preventScroll: true })
     drag.current = { id: event.pointerId, start: point, previous: point, moved: false, layer }
     event.currentTarget.setPointerCapture(event.pointerId)
   }
@@ -282,7 +289,7 @@ export function GlassStage(props: Props) {
     if (!active.moved && Math.hypot(point.x - active.start.x, point.y - active.start.y) < 4) return
     active.moved = true
     event.currentTarget.dataset.dragging = 'true'
-    session.current?.move(point.x - active.previous.x, point.y - active.previous.y)
+    session.current?.rotate(point.x - active.previous.x, point.y - active.previous.y)
     active.previous = point
   }
 
@@ -299,7 +306,7 @@ export function GlassStage(props: Props) {
     const last = tap.current
     const at = performance.now()
     if (last && at - last.time < 350 && Math.hypot(point.x - last.point.x, point.y - last.point.y) < 21) {
-      session.current?.recenter()
+      session.current?.resetOrientation()
       tap.current = null
       return
     }
@@ -311,8 +318,8 @@ export function GlassStage(props: Props) {
     const step = event.shiftKey ? 24 : 8
     const directions = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }
     const direction = directions[event.key as keyof typeof directions]
-    if (direction) session.current?.move(direction[0], direction[1])
-    else if (event.key === 'Home') session.current?.recenter()
+    if (direction) session.current?.rotate(direction[0], direction[1])
+    else if (event.key === 'Home') session.current?.resetOrientation()
     else if (event.key === 'Enter' || event.key === ' ') props.onExpanded(!props.expanded)
     else return
     event.preventDefault()
@@ -329,9 +336,9 @@ export function GlassStage(props: Props) {
       aria-label="Liquid Glass，圆角矩形玻璃样本" aria-describedby="stage-keys"
       onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerEnd}
       onPointerCancel={event => pointerEnd(event, true)} onLostPointerCapture={event => pointerEnd(event, true)}
-      onDoubleClick={() => session.current?.recenter()} onKeyDown={keyboard}
+      onDoubleClick={() => session.current?.resetOrientation()} onKeyDown={keyboard}
     />
-    <span className="sr-only" id="stage-keys">方向键移动，Home 归位，回车或空格切换分层。</span>
-    {unavailable && <p className="renderer-status" role="status">此浏览器的 WebGL 当前不可用。</p>}
+    <span className="sr-only" id="stage-keys">按住并拖动可旋转观察。方向键旋转，Home 恢复默认视角，回车或空格切换分层。</span>
+    {unavailable && <p className="renderer-status" role="status">玻璃预览需要可用的 WebGL 2。</p>}
   </div>
 }
