@@ -7,6 +7,7 @@ export type AudioInput = Readonly<{ low: number; mid: number; high: number; ener
 export interface BackgroundFrame {
   time: number
   phase: number
+  cloudTime: number
   climate: Climate
   audio: AudioInput
   detail: number
@@ -274,7 +275,7 @@ export function createBackground(canvas: HTMLCanvasElement) {
     if (canvas.height !== pixelHeight) canvas.height = pixelHeight
   }
 
-  function render({ time, phase, climate, audio, detail }: BackgroundFrame) {
+  function render({ time, phase, cloudTime, climate, audio, detail }: BackgroundFrame) {
     const narrow = clamp((1.9 - width / height) / 1.2)
     const t = phase * .178
     const amplitude = climate.waveAmplitude * (1 + .29 * audio.low * audio.energy)
@@ -309,7 +310,7 @@ export function createBackground(canvas: HTMLCanvasElement) {
     const sunY = .164 + .009 * Math.cos(t * .57) + narrow * .022
     const shineX = .60 + .083 * Math.sin(t * .74 + .32)
     const sheen = .94 + .06 * Math.sin(t * 1.28)
-    const cloudX = .49 + .17 * Math.sin(time * .048 + 2.1)
+    const cloudX = .49 + .17 * Math.sin(cloudTime * .048 + 2.1)
 
     context.setTransform(canvas.width, 0, 0, canvas.height, 0, 0)
     context.fillStyle = gradient(context, [.12, 0, .85, 1], palette.sky, SKY)
@@ -323,7 +324,7 @@ export function createBackground(canvas: HTMLCanvasElement) {
     }
     if (climate.cloudCover > .035) {
       clouds ??= [cloudStamp(23, .15), cloudStamp(71, .87)]
-      paintClouds(context, clouds, time, climate.cloudCover)
+      paintClouds(context, clouds, cloudTime, climate.cloudCover)
     }
 
     sheet(context, cobalt, -.043, gradient(context, [0, .36, 1, .71], palette.distant, FOUR))

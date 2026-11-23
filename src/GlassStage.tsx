@@ -91,7 +91,7 @@ export function GlassStage(props: Props) {
     installRenderer()
 
     let frame = 0, width = 0, height = 0, pixelRatio = 1
-    let resized = true, dirty = true, time = 0, phase = 0, previousTick = 0
+    let resized = true, dirty = true, time = 0, phase = 0, cloudTime = 0, previousTick = 0
     let previousBackground = -Infinity, sampled = -Infinity
     let detail = navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 4 ? .76 : 1
     let load = 0
@@ -153,6 +153,7 @@ export function GlassStage(props: Props) {
       }
 
       const lastSpeed = climate.flowSpeed
+      const lastCloudSpeed = climate.cloudSpeed
       if (weather !== state.weather) {
         weather = state.weather
         climateFrom = climate
@@ -169,6 +170,7 @@ export function GlassStage(props: Props) {
       }
       time += delta
       phase += delta * (lastSpeed + climate.flowSpeed) / 2
+      cloudTime += delta * (lastCloudSpeed + climate.cloudSpeed) / 2
       const audio = musicEnvelope(delta, state.audio)
 
       if (resetToken !== state.reset) {
@@ -190,7 +192,7 @@ export function GlassStage(props: Props) {
 
       const backdropChanged = resized || ((state.playing || climate !== renderedClimate) && now - previousBackground >= SCENE_FRAME_MS - 1)
       if (backdropChanged) {
-        background.render({ time, phase, climate, audio, detail })
+        background.render({ time, phase, cloudTime, climate, audio, detail })
         renderedClimate = climate
         renderedTime = time
         previousBackground = now
