@@ -289,7 +289,7 @@ export function GlassStage(props: Props) {
     if (!active.moved && Math.hypot(point.x - active.start.x, point.y - active.start.y) < 4) return
     active.moved = true
     event.currentTarget.dataset.dragging = 'true'
-    session.current?.rotate(point.x - active.previous.x, point.y - active.previous.y)
+    session.current?.rotate(point.x - active.previous.x, active.previous.y - point.y)
     active.previous = point
   }
 
