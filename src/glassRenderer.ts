@@ -2,11 +2,12 @@
  * Kubai087 (MIT). See public/licenses/glasswork-MIT.txt. */
 import { CanvasTexture, DataTexture, ExtrudeGeometry, Group, LinearFilter, LinearMipmapLinearFilter, Matrix4, Mesh, MeshBasicMaterial, PlaneGeometry, Scene, ShaderMaterial, Shape, Vector2, Vector3, Vector4, WebGLRenderer } from 'three'
 import type { Climate } from './climate'
+import { paintDeviceInk } from './deviceInk'
 import { createFrostPattern } from './frostPattern'
 import { LAYERS, type EffectiveMaterial, type LayerId, type Material } from './material'
-import { PLAYER_CLEAR_REGIONS } from './playerLayout'
+import { playerLayout, playerClearRegions } from './playerLayout'
 import { layerDepth, type Projection } from './projection'
-import type { GlassShape, ShapeGeometry } from './shape'
+import { roundedRectangle, type GlassShape, type ShapeGeometry } from './shape'
 import type { RainWaterField } from './rainWaterField'
 import { surfaceWeatherGLSL } from './surfaceWeather'
 
@@ -26,6 +27,7 @@ interface Frame {
   climate: Climate
   rainAmount: number
   rainField: RainWaterField | null
+  reelAngle: number
 }
 
 const vertex = `
@@ -37,12 +39,12 @@ void main() {
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }`
 
-const fragment = (shape: GlassShape) => `
+const fragment = `
 precision highp float;
 varying vec2 v_local;
 uniform sampler2D u_background, u_ink, u_surface;
 uniform float u_radius, u_open, u_weight, u_emphasis, u_aa;
-uniform float u_inkBrightness;
+uniform float u_inkBrightness, u_iconBottom, u_device;
 uniform float u_weatherRim;
 uniform int u_layer;
 uniform vec2 u_view, u_half;
@@ -51,7 +53,7 @@ uniform vec3 u_tone;
 uniform vec4 u_lens;
 uniform vec3 u_style, u_tintColor;
 uniform mat4 u_localToClip;
-${shape.distanceGLSL}
+${roundedRectangle.distanceGLSL}
 
 vec2 screenPoint(vec2 point) {
   vec2 p = vec2(point.x, -point.y) / (u_half + u_pad);
@@ -123,18 +125,25 @@ void main() {
       alpha = inside;
     } else if (u_layer == 2) {
       float rim = min(u_lens.x, min(u_half.x, u_half.y) * 0.62);
-      float falloff = pow(max(0.0, 1.0 - depth / rim), u_lens.z);
-      float amount = u_lens.y * rim * falloff;
-      if (amount > 0.015 && inside > 0.0) {
-        vec2 shift = -outward(p) * amount;
-        vec3 bent = blurred(screenPoint(p + shift), u_tone.x);
-        float split = u_lens.w;
-        if (split > 0.001 && amount > 0.75) {
-          bent.r = blurred(screenPoint(p + shift * (1.0 + split)), u_tone.x).r;
-          bent.b = blurred(screenPoint(p + shift * (1.0 - split)), u_tone.x).b;
+      // Small device corners need less reach so adjacent edges do not split the image.
+      vec2 inset = u_half - abs(p);
+      float nearCorner = 1.0 - smoothstep(u_radius + 0.5, u_radius + rim * 0.66, max(inset.x, inset.y));
+      rim = mix(rim, min(rim, u_radius + 2.0), nearCorner * u_device);
+      if (depth < rim && inside > 0.0) {
+        vec2 normal = outward(p);
+        float falloff = pow(max(0.0, 1.0 - depth / rim), u_lens.z);
+        float amount = u_lens.y * rim * falloff;
+        if (amount > 0.015) {
+          vec2 shift = -normal * amount;
+          vec3 bent = blurred(screenPoint(p + shift), u_tone.x);
+          float split = u_lens.w;
+          if (split > 0.001 && amount > 0.75) {
+            bent.r = blurred(screenPoint(p + shift * (1.0 + split)), u_tone.x).r;
+            bent.b = blurred(screenPoint(p + shift * (1.0 - split)), u_tone.x).b;
+          }
+          color = tone(bent);
+          alpha = inside * smoothstep(0.0, 1.3, amount) * mix(1.0, 0.87, openGuide);
         }
-        color = tone(bent);
-        alpha = inside * smoothstep(0.0, 1.3, amount) * mix(1.0, 0.87, openGuide);
       }
     } else if (u_layer == 3) {
       color = u_tintColor;
@@ -155,7 +164,7 @@ void main() {
       float coverage = texture2D(u_ink, uv).a;
       vec3 backdrop = scene(screenPoint(p));
       float iconTone = 1.0 - smoothstep(0.4, 0.62, dot(mix(tone(backdrop), u_tintColor, u_style.y), vec3(0.213, 0.715, 0.072)));
-      float inkTone = mix(u_inkBrightness, iconTone, step(p.y, -u_half.y * 0.3));
+      float inkTone = mix(u_inkBrightness, iconTone, step(p.y, u_iconBottom));
       vec3 darkInk = vec3(0.018, 0.029, 0.060) + backdrop * 0.115;
       vec3 lightInk = vec3(0.87, 0.925, 0.987) + backdrop * 0.08;
       float relief = texture2D(u_ink, uv - vec2(0.0, 1.0 / (2.0 * u_half.y))).a * (1.0 - coverage);
@@ -180,6 +189,11 @@ void main() {
     float line = band(d, 0.0, 0.72 + u_aa * 0.38) * openGuide;
     float guide = (0.28 * u_weight + 0.55 * u_emphasis) * line;
     vec3 guideColor = mix(vec3(0.77, 0.87, 1.0), vec3(0.67, 1.0, 0.96), u_emphasis);
+    if (line > 0.01) {
+      float backdropLuma = dot(scene(screenPoint(p)), vec3(0.213, 0.715, 0.072));
+      vec3 darkGuide = mix(vec3(0.12, 0.23, 0.35), vec3(0.06, 0.40, 0.39), u_emphasis);
+      guideColor = mix(guideColor, darkGuide, smoothstep(0.52, 0.70, backdropLuma));
+    }
     contribution = guideColor * guide + contribution * (1.0 - guide);
     alpha = guide + alpha * (1.0 - guide);
   }
@@ -216,8 +230,15 @@ function trackCanvasTexture(initial: HTMLCanvasElement, mipmaps = false) {
   }
 }
 
-function inkMask(context: CanvasRenderingContext2D, geometry: ShapeGeometry) {
+function inkMask(context: CanvasRenderingContext2D, geometry: ShapeGeometry, shape: GlassShape, reelAngle: number) {
   const { width, height } = geometry
+  context.clearRect(0, 0, width, height)
+  context.globalAlpha = 1
+  if (shape.id !== 'rounded-rectangle') {
+    paintDeviceInk(context, shape.id, geometry, playerLayout(shape.id), reelAngle)
+    return
+  }
+
   const pad = width * .087
   const icon = Math.min(width * .105, 36)
   context.fillStyle = 'white'
@@ -235,6 +256,10 @@ function inkMask(context: CanvasRenderingContext2D, geometry: ShapeGeometry) {
   context.font = Math.max(10, Math.round(width * .036)) + 'px "Segoe UI", "Microsoft YaHei", system-ui, sans-serif'
   context.globalAlpha = .84
   context.fillText('液态玻璃 · 圆角矩形', pad + 1, height - pad)
+}
+
+function sameGeometry(a: ShapeGeometry, b: ShapeGeometry) {
+  return a.width === b.width && a.height === b.height && a.radius === b.radius
 }
 
 const EDGE_DEPTH = 4
@@ -281,7 +306,7 @@ const compositing = {
   transparent: true, premultipliedAlpha: true, depthTest: false, depthWrite: false, toneMapped: false,
 } as const
 
-export function createGlassRenderer(canvas: HTMLCanvasElement, shape: GlassShape) {
+export function createGlassRenderer(canvas: HTMLCanvasElement) {
   const renderer = new WebGLRenderer({ canvas, alpha: true, premultipliedAlpha: true, antialias: false, depth: false })
   renderer.setClearAlpha(0)
   const scene = new Scene()
@@ -297,7 +322,9 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, shape: GlassShape
   const surfaceTexture = trackCanvasTexture(surface)
   const rainTexture = { value: makeSurfaceTexture(new Uint8Array(4), 1, 1) }
   const rainTexel = { value: new Vector2(1, 1) }
-  const frostTexture = { value: makeSurfaceTexture(new Uint8Array(4), 1, 1) }
+  const emptyFrost = makeSurfaceTexture(new Uint8Array(4), 1, 1)
+  const frostTexture = { value: emptyFrost }
+  const frostAtlases = new Map<GlassShape, { geometry: ShapeGeometry; texture: DataTexture; limit: number }>()
   let rainVersion = -1
 
   function prepareRain(field: RainWaterField) {
@@ -312,17 +339,16 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, shape: GlassShape
     }
     rainVersion = field.version
   }
-  let frostGeometry: ShapeGeometry | null = null
-  let frostLimit = 0
-
-  function prepareFrost(geometry: ShapeGeometry) {
-    if (frostGeometry && frostGeometry.width === geometry.width && frostGeometry.height === geometry.height
-      && frostGeometry.radius === geometry.radius) return
-    const pattern = createFrostPattern(shape, geometry, PLAYER_CLEAR_REGIONS)
-    frostTexture.value.dispose()
-    frostTexture.value = makeSurfaceTexture(pattern.pixels, pattern.width, pattern.height)
-    frostGeometry = geometry
-    frostLimit = pattern.maxCoverage
+  function prepareFrost(shape: GlassShape, geometry: ShapeGeometry) {
+    let atlas = frostAtlases.get(shape)
+    if (!atlas || !sameGeometry(atlas.geometry, geometry)) {
+      const pattern = createFrostPattern(shape, geometry, playerClearRegions(shape.id))
+      atlas?.texture.dispose()
+      atlas = { geometry, texture: makeSurfaceTexture(pattern.pixels, pattern.width, pattern.height), limit: pattern.maxCoverage }
+      frostAtlases.set(shape, atlas)
+    }
+    frostTexture.value = atlas.texture
+    return atlas.limit
   }
 
   const common = {
@@ -330,13 +356,14 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, shape: GlassShape
     u_view: { value: new Vector2() }, u_half: { value: new Vector2() }, u_tone: { value: new Vector3() },
     u_lens: { value: new Vector4() }, u_style: { value: new Vector3() }, u_tintColor: { value: new Vector3() },
     u_radius: { value: 0 }, u_open: { value: 0 }, u_aa: { value: 0 }, u_inkBrightness: { value: 0 },
+    u_iconBottom: { value: 0 }, u_device: { value: 0 },
     u_weatherLight: { value: new Vector3(1, 1, 1) }, u_weatherRim: { value: 1 },
     u_weatherRain: { value: 0 }, u_weatherFrost: { value: 0 },
     u_frostPattern: frostTexture, u_frostCoverage: { value: 0 },
     u_rainField: rainTexture, u_rainTexel: rainTexel,
   }
   const planeGeometry = new PlaneGeometry(2, 2)
-  const fragmentShader = fragment(shape)
+  const fragmentShader = fragment
 
   function createLayer(index: number, renderOrder = index) {
     const uniforms = {
@@ -364,14 +391,22 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, shape: GlassShape
   }
   const side = new ShaderMaterial({ ...compositing, uniforms: edgeUniforms, vertexShader: edgeVertex, fragmentShader: edgeFragment })
   let edge: Mesh<ExtrudeGeometry, [MeshBasicMaterial, ShaderMaterial]> | null = null
-  let geometryWidth = 0
+  let previousShape: { shape: GlassShape; geometry: ShapeGeometry } | null = null
 
-  function updateShape(geometry: ShapeGeometry) {
+  let previousReelAngle = 0
+  function repaintInk(shape: GlassShape, geometry: ShapeGeometry, reelAngle: number) {
+    inkMask(maskContext, geometry, shape, reelAngle)
+    maskTexture.update(mask)
+    previousReelAngle = reelAngle
+  }
+
+  function updateShape(shape: GlassShape, geometry: ShapeGeometry, reelAngle: number) {
+    common.u_iconBottom.value = shape === roundedRectangle ? -.15 * geometry.height : -.5 * geometry.height
+    common.u_device.value = Number(shape !== roundedRectangle)
     mask.width = Math.ceil(geometry.width * 2)
     mask.height = Math.ceil(geometry.height * 2)
     maskContext.scale(mask.width / geometry.width, mask.height / geometry.height)
-    inkMask(maskContext, geometry)
-    maskTexture.update(mask)
+    repaintInk(shape, geometry, reelAngle)
     const outline = new Shape(shape.outline(geometry).map(({ x, y }) => new Vector2(x, -y)))
     const extrusion = new ExtrudeGeometry(outline, { depth: EDGE_DEPTH, bevelEnabled: false })
     if (edge) {
@@ -393,11 +428,13 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, shape: GlassShape
     },
     render(source: HTMLCanvasElement, backgroundChanged: boolean, frame: Frame) {
       const { projection, material, effective, climate } = frame
-      const { geometry, orientation, camera, scale, open } = projection
+      const { shape, geometry, orientation, camera, scale, open } = projection
       if (backgroundChanged || backgroundTexture.uniform.value.image !== source) backgroundTexture.update(source)
-      if (geometryWidth !== geometry.width) {
-        geometryWidth = geometry.width
-        updateShape(geometry)
+      if (!previousShape || previousShape.shape !== shape || !sameGeometry(previousShape.geometry, geometry)) {
+        previousShape = { shape, geometry }
+        updateShape(shape, geometry, frame.reelAngle)
+      } else if (shape.id === 'cassette' && previousReelAngle !== frame.reelAngle) {
+        repaintInk(shape, geometry, frame.reelAngle)
       }
       surfaceLayer.mesh.visible = Boolean(frame.surfaceEffect)
       if (frame.surfaceEffect) {
@@ -423,7 +460,7 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, shape: GlassShape
       if (frame.rainField) prepareRain(frame.rainField)
       common.u_weatherRain.value = frame.rainField ? climate.surfaceRain * Math.min(1, frame.rainAmount) : 0
       const snowVisible = climate.frost > .002 && frame.frostCoverage > 0
-      if (snowVisible) prepareFrost(geometry)
+      const frostLimit = snowVisible ? prepareFrost(shape, geometry) : 0
       common.u_weatherFrost.value = snowVisible ? climate.frost : 0
       common.u_frostCoverage.value = snowVisible ? Math.min(frame.frostCoverage, frostLimit) : 0
 
@@ -463,7 +500,8 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, shape: GlassShape
       backgroundTexture.uniform.value.dispose()
       maskTexture.uniform.value.dispose()
       surfaceTexture.uniform.value.dispose()
-      frostTexture.value.dispose()
+      emptyFrost.dispose()
+      for (const atlas of frostAtlases.values()) atlas.texture.dispose()
       rainTexture.value.dispose()
       renderer.dispose()
     },

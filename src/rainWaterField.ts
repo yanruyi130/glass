@@ -1,5 +1,5 @@
-import { PLAYER_CLEAR_REGIONS } from './playerLayout'
-import type { ShapeGeometry } from './shape'
+import { playerClearRegions } from './playerLayout'
+import { roundedRectangle, type GlassShape, type ShapeGeometry } from './shape'
 
 export interface RainWaterField {
   width: number
@@ -26,11 +26,9 @@ interface Packet extends Point {
   span: number
   path: Point[]
   tributary: boolean
+  drainAge: number
 }
 
-const PLATE_W = 360, PLATE_H = 236
-const WIDTH = 320, HEIGHT = 210
-const X_SCALE = WIDTH / PLATE_W, Y_SCALE = HEIGHT / PLATE_H
 const STEP = 1 / 120
 const clamp = (n: number, min = 0, max = 1) => Math.max(min, Math.min(max, n))
 const mix = (a: number, b: number, t: number) => a + (b - a) * t
@@ -49,7 +47,19 @@ function grain(x: number, y: number) {
     mix(hash(col, row + 1), hash(col + 1, row + 1), dx), dy)
 }
 
-export function createRainWaterField() {
+function createSimulation(shape: GlassShape, geometry: ShapeGeometry) {
+  const rectangular = shape === roundedRectangle
+  const PLATE_W = 360
+  const PLATE_H = rectangular ? 236 : PLATE_W * geometry.height / geometry.width
+  const WIDTH = 320
+  const HEIGHT = Math.round(PLATE_H * WIDTH / PLATE_W)
+  const X_SCALE = WIDTH / PLATE_W, Y_SCALE = HEIGHT / PLATE_H
+  const regions = playerClearRegions(shape.id)
+  const scale = geometry.width / PLATE_W
+  const distanceAt = (x: number, y: number) => shape.distance({
+    x: (x / PLATE_W - .5) * geometry.width,
+    y: (y / PLATE_H - .5) * geometry.height,
+  }, geometry) / scale
   const length = WIDTH * HEIGHT
   const frame: RainWaterField = { width: WIDTH, height: HEIGHT, pixels: new Uint8Array(length * 4), version: 0 }
   const wetness = new Float32Array(length)
@@ -72,12 +82,13 @@ export function createRainWaterField() {
     drying[i] = Math.exp(-(0.14 + (1 - fine) ** 3 * 1.5) * STEP)
     const u = (x + .5) / WIDTH, v = (y + .5) / HEIGHT
     let openness = 1
-    for (const area of PLAYER_CLEAR_REGIONS) {
+    for (const area of regions) {
       const dx = Math.max(0, area.x - u, u - area.x - area.width) * PLATE_W
       const dy = Math.max(0, area.y - v, v - area.y - area.height) * PLATE_H
       openness = Math.min(openness, .13 + .87 * ease(clamp(Math.hypot(dx, dy) / (9 + broad * 4))))
     }
-    reserve[i] = openness
+    const edge = distanceAt(u * PLATE_W, v * PLATE_H)
+    reserve[i] = openness * ease(clamp(-edge / 1.6))
   }
 
   function random() {
@@ -104,10 +115,12 @@ export function createRainWaterField() {
     const y1 = Math.min(HEIGHT - 1, Math.ceil((Math.max(a.y, b.y) + radius) * Y_SCALE))
     const dx = b.x - a.x, dy = b.y - a.y, segment = dx * dx + dy * dy || 1
     for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+      const pixel = y * WIDTH + x
+      if (reserve[pixel] === 0) continue
       const px = (x + .5) / X_SCALE - a.x, py = (y + .5) / Y_SCALE - a.y
       const t = clamp((px * dx + py * dy) / segment)
       const dist = ((px - t * dx) ** 2 + (py - t * dy) ** 2) / (radius * radius)
-      if (dist < 1) stamp(y * WIDTH + x, (1 - dist) ** 1.38, t)
+      if (dist < 1) stamp(pixel, (1 - dist) ** 1.38, t)
     }
   }
 
@@ -129,7 +142,7 @@ export function createRainWaterField() {
       pinning: .22 + random() * .25, moisture: .15 + random() * .15, steering: (random() - .5) * 3.7,
       age: 0, forkAt: moving && random() < .42 ? y + 25 + random() * 75 : Infinity,
       side: random() < .5 ? -1 : 1, mergeDelay: 0, momentum: 0,
-      span: 5.5, path: [], tributary: false,
+      span: 5.5, path: [], tributary: false, drainAge: 0,
     }
   }
 
@@ -144,6 +157,20 @@ export function createRainWaterField() {
     }
     x = clamp(x, 15, PLATE_W - 15)
     y = clamp(y, 13, PLATE_H - 22)
+    if (!rectangular) {
+      function accepts(x: number, y: number) {
+        const edge = distanceAt(x, y)
+        const column = clamp(Math.floor(x * X_SCALE), 0, WIDTH - 1)
+        const row = clamp(Math.floor(y * Y_SCALE), 0, HEIGHT - 1)
+        return edge < -3 && reserve[row * WIDTH + column] > .23
+      }
+
+      for (let attempt = 0; attempt < 12 && !accepts(x, y); attempt++) {
+        x = 15 + random() * (PLATE_W - 30)
+        y = 7 + random() * (PLATE_H * .62 - 7)
+      }
+      if (!accepts(x, y)) return
+    }
     if (packets.some(p => Math.hypot(p.x - x, p.y - y) < 5.5)) return
     const moving = random() < (initial ? .62 : .32)
     const drop = packet(x, y, moving ? .49 + random() * .44 : .12 + random() * .40, moving)
@@ -159,7 +186,7 @@ export function createRainWaterField() {
   function coalesce() {
     for (let i = 0; i < packets.length; i++) for (let j = i + 1; j < packets.length; j++) {
       const a = packets[i], b = packets[j]
-      if (a.mergeDelay > 0 || b.mergeDelay > 0) continue
+      if (a.mergeDelay > 0 || b.mergeDelay > 0 || a.drainAge > 0 || b.drainAge > 0) continue
       const reach = 2.1 + Math.sqrt(a.mass) + Math.sqrt(b.mass)
       if (Math.abs(a.x - b.x) > reach || Math.abs(a.y - b.y) > reach * 1.45) continue
       const anyMoving = a.moving || b.moving
@@ -195,6 +222,11 @@ export function createRainWaterField() {
 
     for (let index = packets.length - 1; index >= 0; index--) {
       const water = packets[index]
+      if (water.drainAge > 0) {
+        water.drainAge += STEP
+        if (water.drainAge > .24) packets.splice(index, 1)
+        continue
+      }
       water.age += STEP
       water.mergeDelay -= STEP
       const surface = grain(water.x * .047 + 31, water.y * .039 + 11)
@@ -217,7 +249,15 @@ export function createRainWaterField() {
         water.vy = Math.max(0, (water.vy + drive * STEP + transfer) / (1 + drag * STEP))
         const downhill = (grain(water.x * .037 + 47, water.y * .044) - .5) * 13
         const channel = (wetAt(water.x + 2.7, water.y + 5) - wetAt(water.x - 2.7, water.y + 5)) * 9
-        const boundary = (clamp(water.x, 15, PLATE_W - 15) - water.x) * 2
+        let boundary = (clamp(water.x, 15, PLATE_W - 15) - water.x) * 2
+        if (!rectangular) {
+          const distance = distanceAt(water.x, water.y)
+          const contact = clamp((7 + distance) / 8)
+          if (contact > 0) {
+            const gradient = (distanceAt(water.x - 2, water.y) - distanceAt(water.x + 2, water.y)) / 4
+            boundary += contact * clamp(gradient, -1, 1) * 12
+          }
+        }
         water.vx = mix(water.vx, water.steering + downhill + channel + boundary, .027)
       } else {
         water.vy *= .915
@@ -236,6 +276,11 @@ export function createRainWaterField() {
           water.path.push(previous)
           if (water.path.length > 24) water.path.shift()
         }
+      }
+
+      if (!rectangular && distanceAt(water.x, water.y) > .75) {
+        water.drainAge = STEP
+        continue
       }
 
       if (water.y > water.forkAt && water.mass > .63 && water.vy > 18 && surface > .54 && packets.length < 7) {
@@ -263,7 +308,7 @@ export function createRainWaterField() {
 
   function expose(water: Packet) {
     const mass = Math.sqrt(Math.max(.05, water.visibleMass))
-    const amplitude = clamp(.29 + mass * .66) * clamp(water.age / .26)
+    const amplitude = clamp(.29 + mass * .66) * clamp(water.age / .26) * (1 - ease(clamp(water.drainAge / .24)))
     const radius = 1.38 + mass * 2.58
     let near: Point = water
     let distance = 0
@@ -305,7 +350,7 @@ export function createRainWaterField() {
   }
 
   return {
-    sample(_geometry: ShapeGeometry, time: number, amount: number, slideSpeed: number) {
+    sample(time: number, amount: number, slideSpeed: number) {
       const intensity = clamp(amount, 0, 2)
       const gap = previous === undefined ? 0 : time - previous
       previous = time
@@ -339,6 +384,22 @@ export function createRainWaterField() {
         lastAmount = intensity
       }
       return frame
+    },
+  }
+}
+
+export function createRainWaterField() {
+  const plates = new Map<GlassShape, { aspect: number; curvature: number; simulation: ReturnType<typeof createSimulation> }>()
+  return {
+    sample(shape: GlassShape, geometry: ShapeGeometry, time: number, amount: number, slideSpeed: number) {
+      const aspect = geometry.height / geometry.width
+      const curvature = geometry.radius / geometry.width
+      let plate = plates.get(shape)
+      if (!plate || Math.abs(plate.aspect - aspect) > .001 || Math.abs(plate.curvature - curvature) > .0001) {
+        plate = { aspect, curvature, simulation: createSimulation(shape, geometry) }
+        plates.set(shape, plate)
+      }
+      return plate.simulation.sample(time, amount, slideSpeed)
     },
   }
 }

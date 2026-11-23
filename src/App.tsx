@@ -1,9 +1,12 @@
 import { useState, useSyncExternalStore } from 'react'
 import { GlassStage, type BackgroundTheme } from './GlassStage'
 import { MaterialPanel } from './MaterialPanel'
+import { PlayerControls } from './PlayerControls'
+import { useSoundscape } from './audio'
+import { usePreference } from './preferences'
 import { DEFAULT_WEATHER, WEATHER_PRESETS, type WeatherId } from './climate'
 import { DEFAULT_GAP, DEFAULT_MATERIAL, INITIAL_INK_READING, effectiveMaterial, type InkReading, type LayerId, type Material } from './material'
-import type { ShapeId } from './shape'
+import { GLASS_SHAPES, type ShapeId } from './shape'
 
 const motionPreference = window.matchMedia('(prefers-reduced-motion: reduce)')
 const subscribeMotion = (callback: () => void) => {
@@ -11,7 +14,8 @@ const subscribeMotion = (callback: () => void) => {
   return () => motionPreference.removeEventListener('change', callback)
 }
 const getReducedMotion = () => motionPreference.matches
-const SCENE: { theme: BackgroundTheme; shape: ShapeId } = { theme: 'currents', shape: 'rounded-rectangle' }
+const THEME: BackgroundTheme = 'currents'
+const APPEARANCES = Object.keys(GLASS_SHAPES) as ShapeId[]
 const FROST_COVERAGE_STORAGE_KEY = 'liquid-glass-lab:frost-coverage'
 const WEATHER_OPTIONS = [
   { key: 'sunny', label: '晴天' },
@@ -46,6 +50,7 @@ function ToolbarIcon({ name }: { name: 'mark' | 'pause' | 'play' | 'reset' | Wea
 
 export function App() {
   const reducedMotion = useSyncExternalStore(subscribeMotion, getReducedMotion)
+  const [shape, setShape] = usePreference('appearance', APPEARANCES, 'rounded-rectangle')
   const [material, setMaterial] = useState(DEFAULT_MATERIAL)
   const [playback, setPlayback] = useState<boolean | null>(null)
   const [expanded, setExpanded] = useState(false)
@@ -60,6 +65,7 @@ export function App() {
   const [slideSpeed, setSlideSpeed] = useState(1)
   const [frostCoverage, setFrostCoverage] = useState(loadFrostCoverage)
   const playing = playback ?? !reducedMotion
+  const soundscape = useSoundscape(weather)
 
   function setView(value: boolean) {
     setExpanded(value)
@@ -103,9 +109,11 @@ export function App() {
   return <main>
     <section className="specimen" data-weather={weather} aria-labelledby="lab-title">
       <GlassStage
-        {...SCENE} material={material} playing={playing} expanded={expanded} selected={selected}
+        theme={THEME} shape={shape} material={material} playing={playing} expanded={expanded} selected={selected}
         gap={gap} samples={samples} reset={reset} reducedMotion={reducedMotion}
         weather={weather} rainAmount={rainAmount} slideSpeed={slideSpeed} frostCoverage={frostCoverage / 100}
+        musicBands={soundscape.bands} musicPlaying={soundscape.playing}
+        renderPlayer={appearance => <PlayerControls appearance={appearance} player={soundscape} />}
         onSelect={selectLayer} onExpanded={setView} onEffective={setEffective} onInk={setInk}
       />
       <header className="stage-toolbar">
@@ -139,7 +147,7 @@ export function App() {
         <span>{expanded ? '按住拖动旋转 · 点击薄片' : '按住拖动旋转 · 双击复位'}</span>
       </div>
     </section>
-    <MaterialPanel expanded={expanded} selected={selected} gap={gap} material={material} effective={effective} ink={ink}
+    <MaterialPanel shape={shape} onShape={setShape} expanded={expanded} selected={selected} gap={gap} material={material} effective={effective} ink={ink}
       rain={weather === 'rainy' ? { amount: rainAmount, slideSpeed, onAmount: setRainAmount, onSlideSpeed: setSlideSpeed } : null}
       frost={weather === 'snow' ? { coverage: frostCoverage, onCoverage: changeFrostCoverage } : null}
       samples={samples} onExpanded={setView} onSelect={selectLayer} onGap={changeGap} onParameter={setParameter} onSamples={setSamples} />

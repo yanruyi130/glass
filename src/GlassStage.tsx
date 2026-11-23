@@ -1,10 +1,10 @@
-import { useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
+import { useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react'
 import { createBackground, type AudioInput } from './background'
 import { WEATHER_PRESETS, blendClimate, type Climate, type WeatherId } from './climate'
 import { createGlassRenderer, type SurfaceEffect } from './glassRenderer'
 import { INITIAL_INK_READING, LAYERS, clamp, effectiveMaterial, mix, prefersLightInk, type EffectiveMaterial, type InkReading, type LayerId, type Material } from './material'
 import { createMusicEnvelope } from './musicEnergy'
-import { PITCH_RANGE, YAW_RANGE, hitLayer, makeProjection, projectedBounds, type Projection, type ViewRotation } from './projection'
+import { PITCH_RANGE, YAW_RANGE, hitLayer, inkPlaneTransform, makeProjection, projectedBounds, type Projection, type ViewRotation } from './projection'
 import { GLASS_SHAPES, type Point, type ShapeId } from './shape'
 import { createBackgroundSampler, sampleInkPositions } from './sampling'
 import { createRainWaterField } from './rainWaterField'
@@ -13,6 +13,7 @@ export const BACKGROUNDS = { currents: createBackground }
 export type BackgroundTheme = keyof typeof BACKGROUNDS
 const DEFAULT_VIEW: ViewRotation = { pitch: 0, yaw: 0 }
 const WEATHER_MS = 2000
+const SHAPE_FADE_MS = 145
 const SCENE_FRAME_MS = 1000 / 30
 
 interface Props {
@@ -31,6 +32,9 @@ interface Props {
   reducedMotion: boolean
   reset: number
   audio?: AudioInput
+  musicBands?: Readonly<{ current: AudioInput }>
+  musicPlaying?: boolean
+  renderPlayer?: (appearance: Exclude<ShapeId, 'rounded-rectangle'>) => ReactNode
   surfaceEffect?: SurfaceEffect
   onSelect: (layer: LayerId) => void
   onExpanded: (expanded: boolean) => void
@@ -53,6 +57,7 @@ export function GlassStage(props: Props) {
   const stage = useRef<HTMLDivElement>(null)
   const backgroundCanvas = useRef<HTMLCanvasElement>(null)
   const materialCanvas = useRef<HTMLCanvasElement>(null)
+  const playerPlane = useRef<HTMLDivElement>(null)
   const hitRegion = useRef<HTMLDivElement>(null)
   const sampleMarkers = useRef<HTMLDivElement>(null)
   const session = useRef<StageSession>(null)
@@ -60,8 +65,9 @@ export function GlassStage(props: Props) {
   const tap = useRef<{ point: Point; time: number }>(null)
   const drag = useRef<{ id: number; start: Point; previous: Point; moved: boolean; layer: number }>(null)
   const [unavailable, setUnavailable] = useState(false)
+  const [displayedShape, setDisplayedShape] = useState(props.shape)
 
-  const { theme, shape: shapeId } = props
+  const { theme } = props
 
   useLayoutEffect(() => {
     latest.current = props
@@ -71,9 +77,14 @@ export function GlassStage(props: Props) {
   useLayoutEffect(() => {
     const host = stage.current!
     const canvas = materialCanvas.current!
+    const player = playerPlane.current!
     const focus = hitRegion.current!
     const markers = sampleMarkers.current!
-    const shape = GLASS_SHAPES[shapeId]
+    let shapeId = latest.current.shape
+    let shape = GLASS_SHAPES[shapeId]
+    let opacity = 1, fadeFrom = 1, fadeTo = 1
+    let fadeAt: number | null = 0
+    let reelAngle = 0, reelSpeed = 0, reelTick = 0, renderedReel = 0, reelFrame = -Infinity
     const background = BACKGROUNDS[theme](backgroundCanvas.current!)
     const read = createBackgroundSampler()
     const musicEnvelope = createMusicEnvelope()
@@ -82,7 +93,7 @@ export function GlassStage(props: Props) {
     let contextLost = false
     function installRenderer() {
       try {
-        renderer = createGlassRenderer(canvas, shape)
+        renderer = createGlassRenderer(canvas)
       } catch (error) {
         console.error('Liquid glass renderer initialization failed', error)
       }
@@ -140,6 +151,40 @@ export function GlassStage(props: Props) {
       window.clearTimeout(trailingSample)
       if (!width || !height) return
       const state = latest.current
+      const fadeTarget = state.shape === shapeId ? 1 : 0
+      if (fadeTo !== fadeTarget) {
+        fadeFrom = opacity
+        fadeTo = fadeTarget
+        fadeAt = now
+      }
+      fadeAt ??= now
+      const fadeProgress = clamp((now - fadeAt) / SHAPE_FADE_MS)
+      const fade = fadeProgress * fadeProgress * (3 - 2 * fadeProgress)
+      opacity = state.reducedMotion ? fadeTo : mix(fadeFrom, fadeTo, fade)
+      if (opacity === 0 && state.shape !== shapeId) {
+        shapeId = state.shape
+        shape = GLASS_SHAPES[shapeId]
+        setDisplayedShape(shapeId)
+        fadeFrom = 0
+        fadeTo = 1
+        // Start fading in on the frame after the new mask and weather textures are ready.
+        fadeAt = null
+        sampled = -Infinity
+        dirty = true
+        focus.removeAttribute('data-on-shape')
+        tap.current = null
+        if (state.reducedMotion) opacity = 1
+      }
+      canvas.style.opacity = opacity === 1 ? '' : String(opacity)
+      const shapeAnimating = opacity !== fadeTo
+      const reelElapsed = reelTick ? Math.min(.06, Math.max(0, (now - reelTick) / 1000)) : 0
+      reelTick = now
+      const reelTarget = !state.reducedMotion && shapeId === 'cassette' && state.musicPlaying ? .62 : 0
+      if (state.reducedMotion) reelSpeed = 0
+      else reelSpeed += (reelTarget - reelSpeed) * -Math.expm1(-reelElapsed / .19)
+      if (!reelTarget && reelSpeed < .012) reelSpeed = 0
+      reelAngle = (reelAngle + reelSpeed * reelElapsed) % (Math.PI * 2)
+      const reelChanged = shapeId === 'cassette' && Math.abs(reelAngle - renderedReel) > .014 && now - reelFrame >= SCENE_FRAME_MS - 1
       const elapsed = state.playing && previousTick ? (now - previousTick) / 1000 : 0
       previousTick = state.playing ? now : 0
       const delta = elapsed > .20 ? 0 : Math.min(elapsed, .075)
@@ -173,7 +218,8 @@ export function GlassStage(props: Props) {
       phase += delta * (lastSpeed + climate.flowSpeed) / 2
       cloudTime += delta * (lastCloudSpeed + climate.cloudSpeed) / 2
       cloudDriftTime += delta * (lastCloudDriftSpeed + climate.cloudSpeed * climate.cloudDrift) / 2
-      const audio = musicEnvelope(delta, state.audio)
+      const music = state.musicBands?.current
+      const audio = musicEnvelope(delta, music && (state.musicPlaying || music.energy > 0) ? music : state.audio)
 
       if (resetToken !== state.reset) {
         resetToken = state.reset
@@ -208,6 +254,10 @@ export function GlassStage(props: Props) {
         focus.style.top = bounds.top + 'px'
         focus.style.width = (bounds.right - bounds.left) + 'px'
         focus.style.height = (bounds.bottom - bounds.top) + 'px'
+        const { geometry } = projection
+        player.style.width = geometry.width + 'px'
+        player.style.height = geometry.height + 'px'
+        player.style.transform = inkPlaneTransform(projection)
       }
 
       const tone = effectiveMaterial(state.material, renderedClimate.glass)
@@ -215,7 +265,7 @@ export function GlassStage(props: Props) {
       if (sampleDirty && (resized || now - sampled >= 78)) {
         const [r, g, b] = renderedClimate.glass.tintColor
         const tintLuminance = .2126 * r + .7152 * g + .0722 * b
-        const source = read(background.canvas, sampleInkPositions(projection), width, height)
+        const source = read(background.canvas, sampleInkPositions(projection, shape.id), width, height)
         const luminance = mix(clamp(source * tone.brightness), tintLuminance, tone.tint)
         const firstReading = lightInk === undefined
         lightInk = prefersLightInk(luminance, lightInk)
@@ -228,7 +278,7 @@ export function GlassStage(props: Props) {
         sampleDirty = false
       }
       if (state.samples && projectionChanged) {
-        sampleInkPositions(projection).forEach((point, index) => {
+        sampleInkPositions(projection, shape.id).forEach((point, index) => {
           const marker = markers.children[index] as HTMLElement
           marker.style.transform = 'translate(' + point.x + 'px,' + point.y + 'px)'
         })
@@ -246,19 +296,26 @@ export function GlassStage(props: Props) {
         state.onEffective(tone)
       }
       const inkChanged = previousInkBrightness !== inkBrightness
-      if (!contextLost && (projectionChanged || backdropChanged || inkChanged)) {
+      const contentWeight = state.selected && state.selected !== 'ink' ? 1 - .64 * openness : 1
+      player.style.opacity = String(opacity * contentWeight)
+      player.dataset.ink = inkBrightness >= .53 ? 'light' : 'dark'
+      if (!contextLost && (projectionChanged || backdropChanged || inkChanged || reelChanged)) {
         const rainField = renderedClimate.surfaceRain > .002 && state.rainAmount > 0
-          ? rainWater.sample(projection.geometry, renderedTime, state.rainAmount, state.slideSpeed)
+          ? rainWater.sample(shape, projection.geometry, renderedTime, state.rainAmount, state.slideSpeed)
           : null
         renderer?.render(background.canvas, backdropChanged, {
           width, height, projection, material: state.material, effective: tone,
           frostCoverage: state.frostCoverage, inkBrightness, selected: state.selected, time: renderedTime, surfaceEffect: state.surfaceEffect ?? null,
-          climate: renderedClimate, rainAmount: state.rainAmount, rainField,
+          climate: renderedClimate, rainAmount: state.rainAmount, rainField, reelAngle,
         })
+      }
+      if (reelChanged) {
+        renderedReel = reelAngle
+        reelFrame = now
       }
       dirty = false
       resized = false
-      if (state.playing || animating || settling || climateFrom || climate !== renderedClimate) frame = requestAnimationFrame(tick)
+      if (state.playing || animating || shapeAnimating || reelTarget || reelSpeed || settling || climateFrom || climate !== renderedClimate) frame = requestAnimationFrame(tick)
       else if (sampleDirty) trailingSample = window.setTimeout(wake, Math.max(0, sampled + 78 - now))
     }
 
@@ -276,7 +333,7 @@ export function GlassStage(props: Props) {
         wake()
       },
       hit(point) {
-        return projection ? hitLayer(projection, shape, point) : -1
+        return projection ? hitLayer(projection, point) : -1
       },
     }
 
@@ -294,7 +351,7 @@ export function GlassStage(props: Props) {
       canvas.removeEventListener('webglcontextlost', lost)
       canvas.removeEventListener('webglcontextrestored', restored)
     }
-  }, [theme, shapeId])
+  }, [theme])
 
   function position(event: PointerEvent<HTMLDivElement>) {
     const bounds = stage.current!.getBoundingClientRect()
@@ -314,8 +371,15 @@ export function GlassStage(props: Props) {
 
   function pointerMove(event: PointerEvent<HTMLDivElement>) {
     const active = drag.current
-    if (!active || active.id !== event.pointerId) return
     const point = position(event)
+    if (!active) {
+      if (event.pointerType === 'mouse') {
+        const overShape = (session.current?.hit(point) ?? -1) >= 0
+        event.currentTarget.toggleAttribute('data-on-shape', overShape)
+      }
+      return
+    }
+    if (active.id !== event.pointerId) return
     if (!active.moved && Math.hypot(point.x - active.start.x, point.y - active.start.y) < 4) return
     active.moved = true
     event.currentTarget.dataset.dragging = 'true'
@@ -355,7 +419,7 @@ export function GlassStage(props: Props) {
     event.preventDefault()
   }
 
-  return <div className="glass-stage" ref={stage} data-view={props.expanded ? 'expanded' : 'assembled'}>
+  return <div className="glass-stage" ref={stage} data-shape={props.shape} data-view={props.expanded ? 'expanded' : 'assembled'}>
     <canvas className="stage-canvas" ref={backgroundCanvas} aria-hidden="true" />
     <canvas className="stage-canvas" ref={materialCanvas} aria-hidden="true" />
     <div className="sample-markers" ref={sampleMarkers} hidden={!props.samples} aria-hidden="true">
@@ -363,11 +427,14 @@ export function GlassStage(props: Props) {
     </div>
     <div
       className="stage-hit-region" ref={hitRegion} role="group" tabIndex={0}
-      aria-label="Liquid Glass，圆角矩形玻璃样本" aria-describedby="stage-keys"
+      aria-label={'Liquid Glass，' + GLASS_SHAPES[props.shape].label + '玻璃样本'} aria-describedby="stage-keys"
       onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerEnd}
       onPointerCancel={event => pointerEnd(event, true)} onLostPointerCapture={event => pointerEnd(event, true)}
-      onDoubleClick={() => session.current?.resetOrientation()} onKeyDown={keyboard}
+      onPointerLeave={event => event.currentTarget.removeAttribute('data-on-shape')} onKeyDown={keyboard}
     />
+    <div className="stage-player-plane" ref={playerPlane}>
+      {displayedShape !== 'rounded-rectangle' && props.renderPlayer?.(displayedShape)}
+    </div>
     <span className="sr-only" id="stage-keys">按住并拖动可旋转观察。方向键旋转，Home 恢复默认视角，回车或空格切换分层。</span>
     {unavailable && <p className="renderer-status" role="status">玻璃预览需要可用的 WebGL 2。</p>}
   </div>

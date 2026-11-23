@@ -1,3 +1,4 @@
+import { GLASS_SHAPES, type ShapeId } from './shape'
 import type { EffectiveMaterial, InkReading, LayerId, Material } from './material'
 import './inspector.css'
 
@@ -54,7 +55,7 @@ const layers: {
     id: 'rim',
     name: 'Rim lens',
     translation: '边缘折射',
-    description: '曲线与色彩在圆角边缘压缩、偏移并产生细微色散，位移向中央衰减。',
+    description: '曲线与色彩在轮廓边缘压缩、偏移并产生细微色散，位移向中央衰减。',
     controls: [
       { key: 'rimWidth', label: '折射边宽', min: 12, max: 68, step: 1, format: pixels },
       { key: 'edge', label: '位移倍率', min: 0, max: 1.8, step: .05, format: (value) => value.toFixed(2) + '×' },
@@ -88,6 +89,8 @@ const layers: {
 ]
 
 type PanelProps = {
+  shape: ShapeId
+  onShape: (shape: ShapeId) => void
   expanded: boolean
   selected: LayerId | null
   gap: number
@@ -134,7 +137,7 @@ function RangeControl({ label, display, value, min, max, step, onChange }: {
 }
 
 export function MaterialPanel({
-  expanded, selected, gap, material, effective, ink, samples, rain, frost,
+  shape, onShape, expanded, selected, gap, material, effective, ink, samples, rain, frost,
   onExpanded, onSelect, onGap, onParameter, onSamples,
 }: PanelProps) {
   const current = layers.find((layer) => layer.id === selected)
@@ -161,6 +164,23 @@ export function MaterialPanel({
             />
           </div>
         </header>
+
+        <div className="inspector__shapes" role="group" aria-label="玻璃外观">
+          <span className="inspector__shapes-label" aria-hidden="true">外观</span>
+          <div className="inspector__shape-options">
+            {Object.values(GLASS_SHAPES).map(option => (
+              <button className="inspector-shape" key={option.id} type="button" aria-label={option.label} aria-pressed={option.id === shape}
+                onClick={() => onShape(option.id)}>
+                <svg viewBox={option.preview.viewBox} aria-hidden="true">
+                  <path d={option.preview.path} vectorEffect="non-scaling-stroke" />
+                  {option.id === 'cassette' && <path d="M20 31a12 12 0 1 0 24 0a12 12 0 1 0 -24 0M56 31a12 12 0 1 0 24 0a12 12 0 1 0 -24 0" vectorEffect="non-scaling-stroke" />}
+                  {option.id === 'radio' && <path d="M14 15h18m-18 8h18m-18 8h18m12-15h23m-23 14h21m10-7a7 7 0 1 0 14 0a7 7 0 1 0 -14 0" vectorEffect="non-scaling-stroke" />}
+                </svg>
+                <span>{option.id === 'cassette' ? '磁带' : option.id === 'radio' ? '收音机' : option.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
 
         <div className="inspector__body">
           <div className="inspector__navigation">

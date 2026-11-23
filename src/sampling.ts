@@ -1,14 +1,14 @@
 /* Grid and trimmed luminance adapted from Glasswork under MIT. */
-import { PLAYER_LAYOUT } from './playerLayout'
+import { playerLayout } from './playerLayout'
 import { layerDepth, project, type Projection } from './projection'
-import type { Point } from './shape'
+import type { Point, ShapeId } from './shape'
 
 const INK_GRID = [.30, .55, .81].flatMap(y => [.06, .26, .46, .66, .86].map(x => ({ x, y })))
 
-export function sampleInkPositions(projection: Projection) {
+export function sampleInkPositions(projection: Projection, appearance: ShapeId) {
   const { width, height } = projection.geometry
   const depth = layerDepth(projection, 5)
-  const text = PLAYER_LAYOUT.trackText
+  const text = playerLayout(appearance).trackText
   return INK_GRID.map(point => project(projection, {
     x: (text.x + point.x * text.width - .5) * width,
     y: (text.y + point.y * text.height - .5) * height,

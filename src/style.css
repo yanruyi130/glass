@@ -34,13 +34,30 @@ button { cursor: pointer; }
 .glass-stage { overflow: hidden; }
 .stage-canvas { display: block; width: 100%; height: 100%; pointer-events: none; }
 
+.stage-player-plane {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  pointer-events: none;
+  color: var(--player-ink);
+  --player-ink: #102f49;
+  --player-quiet: #284a61;
+}
+.stage-player-plane[data-ink="light"] {
+  --player-ink: #edf8ff;
+  --player-quiet: #c1d7e4;
+}
+
 .stage-hit-region {
   position: absolute;
   touch-action: none;
-  cursor: grab;
+  cursor: auto;
   user-select: none;
   border-radius: 30px;
 }
+.glass-stage:not([data-shape="rounded-rectangle"]) .stage-hit-region { border-radius: 0; }
+.stage-hit-region[data-on-shape] { cursor: grab; }
 .stage-hit-region[data-dragging] { cursor: grabbing; }
 
 .stage-toolbar, .stage-caption {

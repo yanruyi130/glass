@@ -1,4 +1,4 @@
-import type { GlassShape, ShapeGeometry } from './shape'
+import { roundedRectangle, type GlassShape, type ShapeGeometry } from './shape'
 
 export interface FrostClearRegion { x: number; y: number; width: number; height: number }
 type Point = readonly [number, number]
@@ -17,6 +17,33 @@ function noise(x: number, y: number) {
   const ix = Math.floor(x), iy = Math.floor(y)
   const a = smooth(x - ix), b = smooth(y - iy)
   return lerp(lerp(hash(ix, iy), hash(ix + 1, iy), a), lerp(hash(ix, iy + 1), hash(ix + 1, iy + 1), a), b)
+}
+
+function contourRoots(shape: GlassShape, geometry: ShapeGeometry, random: () => number) {
+  const outline = shape.outline(geometry)
+  let perimeter = 0
+  let winding = 0
+  const edges = outline.map((a, i) => {
+    const b = outline[(i + 1) % outline.length]
+    const dx = b.x - a.x, dy = b.y - a.y
+    const start = perimeter
+    const length = Math.hypot(dx, dy)
+    perimeter += length
+    winding += a.x * b.y - b.x * a.y
+    return { a, dx, dy, start, length }
+  })
+  const direction = Math.sign(winding)
+  const count = 16
+  const phase = random()
+  return Array.from({ length: count }, (_, i) => {
+    const distance = (((i + .20 + random() * .62) / count + phase) % 1) * perimeter
+    const edge = edges.find(({ start, length }) => distance < start + length) ?? edges[edges.length - 1]
+    const t = (distance - edge.start) / edge.length
+    const nx = -edge.dy * direction / edge.length, ny = edge.dx * direction / edge.length
+    const x = edge.a.x + edge.dx * t + nx * geometry.width * .002
+    const y = edge.a.y + edge.dy * t + ny * geometry.width * .002
+    return [x / geometry.width + .5, y / geometry.height + .5, Math.atan2(ny, nx), .015 + random() * .16] as const
+  })
 }
 
 /** Local atlas channels: growth rank, condensation, crystal strength, crystal growth rank. */
@@ -58,12 +85,12 @@ export function createFrostPattern(shape: GlassShape, geometry: ShapeGeometry, c
     }
   }
 
-  const roots = [
+  const roots = shape === roundedRectangle ? [
     [.067,.13,.32,.018], [.22,.018,1.18,.058], [.31,.024,1.65,.137], [.49,.014,1.91,.063],
     [.66,.01,1.21,.118], [.88,.017,2.04,.027], [.965,.11,2.57,.136], [.981,.32,2.86,.084],
     [.97,.58,3.47,.099], [.022,.43,-.47,.043], [.017,.64,-.59,.126], [.116,.937,-1.53,.168],
     [.92,.937,-2.14,.129], [.76,.955,-1.72,.073], [.475,.22,.74,.182], [.824,.37,2.25,.148],
-  ]
+  ] : contourRoots(shape, geometry, random)
   for (const [u,v,angle,birth] of roots) {
     let origin: Point = [u * width, v * height]
     let heading = angle + (random() - .5) * .38
@@ -135,7 +162,10 @@ export function createFrostPattern(shape: GlassShape, geometry: ShapeGeometry, c
   })
   for (let i = 0; i < count; i++) {
     const slot = field[i]
-    if (slot < bins.length) pixels[i * 4] = rank[slot]
+    if (slot >= bins.length) continue
+    const channel = i * 4
+    pixels[channel] = rank[slot]
+    if (shape !== roundedRectangle) pixels[channel + 3] = Math.max(rank[slot], pixels[channel + 3])
   }
   return { width, height, pixels, maxCoverage: Math.min(.60, eligibleArea / Math.max(1,plateArea)) }
 }
