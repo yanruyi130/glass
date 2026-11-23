@@ -7,7 +7,7 @@ import { createMusicEnvelope } from './musicEnergy'
 import { PITCH_RANGE, YAW_RANGE, hitLayer, makeProjection, projectedBounds, type Projection, type ViewRotation } from './projection'
 import { GLASS_SHAPES, type Point, type ShapeId } from './shape'
 import { createBackgroundSampler, sampleInkPositions } from './sampling'
-import { createSurfaceWeather } from './surfaceWeather'
+import { createRainWaterField } from './rainWaterField'
 
 export const BACKGROUNDS = { currents: createBackground }
 export type BackgroundTheme = keyof typeof BACKGROUNDS
@@ -77,7 +77,7 @@ export function GlassStage(props: Props) {
     const background = BACKGROUNDS[theme](backgroundCanvas.current!)
     const read = createBackgroundSampler()
     const musicEnvelope = createMusicEnvelope()
-    const surfaceWeather = createSurfaceWeather()
+    const rainWater = createRainWaterField()
     let renderer: ReturnType<typeof createGlassRenderer> | null = null
     let contextLost = false
     function installRenderer() {
@@ -242,13 +242,13 @@ export function GlassStage(props: Props) {
       }
       const inkChanged = previousInkBrightness !== inkBrightness
       if (!contextLost && (projectionChanged || backdropChanged || inkChanged)) {
-        const droplets = renderedClimate.surfaceRain > .002 && state.rainAmount > 0
-          ? surfaceWeather.sample(projection.geometry, renderedTime, state.rainAmount, state.slideSpeed)
+        const rainField = renderedClimate.surfaceRain > .002 && state.rainAmount > 0
+          ? rainWater.sample(projection.geometry, renderedTime, state.rainAmount, state.slideSpeed)
           : null
         renderer?.render(background.canvas, backdropChanged, {
           width, height, projection, material: state.material, effective: tone,
           frostCoverage: state.frostCoverage, inkBrightness, selected: state.selected, time: renderedTime, surfaceEffect: state.surfaceEffect ?? null,
-          climate: renderedClimate, rainAmount: state.rainAmount, droplets,
+          climate: renderedClimate, rainAmount: state.rainAmount, rainField,
         })
       }
       dirty = false

@@ -7,7 +7,8 @@ import { LAYERS, type EffectiveMaterial, type LayerId, type Material } from './m
 import { PLAYER_CLEAR_REGIONS } from './playerLayout'
 import { layerDepth, type Projection } from './projection'
 import type { GlassShape, ShapeGeometry } from './shape'
-import { RAIN_DROP_LIMIT, RAIN_TRAIL_LIMIT, surfaceWeatherGLSL } from './surfaceWeather'
+import type { RainWaterField } from './rainWaterField'
+import { surfaceWeatherGLSL } from './surfaceWeather'
 
 export type SurfaceEffect = (context: CanvasRenderingContext2D, geometry: ShapeGeometry, time: number) => void
 
@@ -24,7 +25,7 @@ interface Frame {
   surfaceEffect: SurfaceEffect | null
   climate: Climate
   rainAmount: number
-  droplets: { drops: Float32Array; trails: Float32Array } | null
+  rainField: RainWaterField | null
 }
 
 const vertex = `
@@ -267,6 +268,15 @@ void main() {
   gl_FragColor = vec4(color * alpha, alpha);
 }`
 
+function makeSurfaceTexture(pixels: Uint8Array, width: number, height: number) {
+  const texture = new DataTexture(pixels, width, height)
+  texture.flipY = false
+  texture.minFilter = LinearFilter
+  texture.magFilter = LinearFilter
+  texture.needsUpdate = true
+  return texture
+}
+
 const compositing = {
   transparent: true, premultipliedAlpha: true, depthTest: false, depthWrite: false, toneMapped: false,
 } as const
@@ -285,11 +295,23 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, shape: GlassShape
   const backgroundTexture = trackCanvasTexture(document.createElement('canvas'))
   const maskTexture = trackCanvasTexture(mask, true)
   const surfaceTexture = trackCanvasTexture(surface)
-  const emptyRain: NonNullable<Frame['droplets']> = {
-    drops: new Float32Array(RAIN_DROP_LIMIT * 4), trails: new Float32Array(RAIN_TRAIL_LIMIT * 8),
+  const rainTexture = { value: makeSurfaceTexture(new Uint8Array(4), 1, 1) }
+  const rainTexel = { value: new Vector2(1, 1) }
+  const frostTexture = { value: makeSurfaceTexture(new Uint8Array(4), 1, 1) }
+  let rainVersion = -1
+
+  function prepareRain(field: RainWaterField) {
+    const texture = rainTexture.value
+    const image = texture.image
+    if (image.width !== field.width || image.height !== field.height || image.data !== field.pixels) {
+      texture.dispose()
+      rainTexture.value = makeSurfaceTexture(field.pixels, field.width, field.height)
+      rainTexel.value.set(1 / field.width, 1 / field.height)
+    } else if (rainVersion !== field.version) {
+      texture.needsUpdate = true
+    }
+    rainVersion = field.version
   }
-  const frostTexture = { value: new DataTexture(new Uint8Array(4), 1, 1) }
-  frostTexture.value.needsUpdate = true
   let frostGeometry: ShapeGeometry | null = null
   let frostLimit = 0
 
@@ -297,13 +319,8 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, shape: GlassShape
     if (frostGeometry && frostGeometry.width === geometry.width && frostGeometry.height === geometry.height
       && frostGeometry.radius === geometry.radius) return
     const pattern = createFrostPattern(shape, geometry, PLAYER_CLEAR_REGIONS)
-    const atlas = new DataTexture(pattern.pixels, pattern.width, pattern.height)
-    atlas.flipY = false
-    atlas.minFilter = LinearFilter
-    atlas.magFilter = LinearFilter
-    atlas.needsUpdate = true
     frostTexture.value.dispose()
-    frostTexture.value = atlas
+    frostTexture.value = makeSurfaceTexture(pattern.pixels, pattern.width, pattern.height)
     frostGeometry = geometry
     frostLimit = pattern.maxCoverage
   }
@@ -316,7 +333,7 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, shape: GlassShape
     u_weatherLight: { value: new Vector3(1, 1, 1) }, u_weatherRim: { value: 1 },
     u_weatherRain: { value: 0 }, u_weatherFrost: { value: 0 },
     u_frostPattern: frostTexture, u_frostCoverage: { value: 0 },
-    u_rainDrops: { value: emptyRain.drops }, u_rainTrails: { value: emptyRain.trails },
+    u_rainField: rainTexture, u_rainTexel: rainTexel,
   }
   const planeGeometry = new PlaneGeometry(2, 2)
   const fragmentShader = fragment(shape)
@@ -403,13 +420,13 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, shape: GlassShape
       common.u_inkBrightness.value = frame.inkBrightness
       common.u_weatherLight.value.set(...climate.rimTint)
       common.u_weatherRim.value = climate.rimLight
-      common.u_weatherRain.value = frame.droplets ? climate.surfaceRain * Math.min(1, frame.rainAmount) : 0
+      if (frame.rainField) prepareRain(frame.rainField)
+      common.u_weatherRain.value = frame.rainField ? climate.surfaceRain * Math.min(1, frame.rainAmount) : 0
       const snowVisible = climate.frost > .002 && frame.frostCoverage > 0
       if (snowVisible) prepareFrost(geometry)
       common.u_weatherFrost.value = snowVisible ? climate.frost : 0
       common.u_frostCoverage.value = snowVisible ? Math.min(frame.frostCoverage, frostLimit) : 0
-      common.u_rainDrops.value = frame.droplets?.drops ?? emptyRain.drops
-      common.u_rainTrails.value = frame.droplets?.trails ?? emptyRain.trails
+
       weatherLayer.mesh.visible = common.u_weatherRain.value > .002 || snowVisible
 
       pivot.quaternion.copy(orientation)
@@ -447,6 +464,7 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, shape: GlassShape
       maskTexture.uniform.value.dispose()
       surfaceTexture.uniform.value.dispose()
       frostTexture.value.dispose()
+      rainTexture.value.dispose()
       renderer.dispose()
     },
   }
