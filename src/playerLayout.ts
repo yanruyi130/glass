@@ -24,11 +24,11 @@ const cassetteReel = (centerX: number) => region(centerX - REEL_WIDTH / 2, .4625
 /** Normalized glass-local coordinates with a top-left origin. */
 const layouts: Record<ShapeId, PlayerLayout> = {
   'rounded-rectangle': {
-    mark: region(.066, .115, .145, .175),
-    trackText: region(.069, .64, .532, .246),
-    transport: region(.674, .675, .246, .210),
-    progress: region(.082, .907, .836, .042),
-    volume: region(.815, .692, .104, .14),
+    mark: region(.10, .153, .185, .284),
+    trackText: region(.322, .163, .43, .259),
+    library: region(.783, .187, .116, .178),
+    progress: region(.10, .474, .80, .217),
+    transport: region(.19, .719, .62, .18),
   },
   cassette: {
     mark: region(.073, .115, .045, .10),

@@ -127,3 +127,70 @@
 @media (max-width: 319px) {
   .deck-controls--radio .deck-controls__progress { height: 17px; }
 }
+
+.deck-controls__cover {
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid rgba(187, 229, 255, .31);
+  border-radius: clamp(8px, 1.2vw, 13px);
+  background:
+    radial-gradient(ellipse at 82% 21%, #4babd2 0, transparent 51%),
+    linear-gradient(146deg, #112c4b 24%, #255874 75%, #153756);
+  color: #e3f4ff;
+  box-shadow: inset 0 1px 2px rgba(219, 243, 255, .23), 0 2px 5px rgba(9, 28, 49, .17);
+}
+.deck-controls__cover svg { width: 72%; height: 72%; }
+.deck-controls--rounded-rectangle .deck-controls__track {
+  font-size: clamp(11px, 3.35vw, 19px);
+  font-weight: 650;
+}
+.deck-controls--rounded-rectangle .deck-controls__time {
+  margin-top: 3px;
+  font: 500 clamp(9px, 2vw, 12px)/1.15 system-ui, sans-serif;
+}
+.deck-controls--rounded-rectangle .deck-controls__progress-slot {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+}
+.deck-controls__elapsed {
+  display: flex;
+  justify-content: space-between;
+  color: var(--deck-quiet);
+  font: clamp(8px, 2vw, 11px)/1 var(--mono, monospace);
+  font-variant-numeric: tabular-nums;
+}
+.deck-controls--rounded-rectangle .deck-controls__progress {
+  --deck-track: linear-gradient(to right, var(--deck-ink) 0 var(--deck-position), rgba(36, 78, 109, .24) var(--deck-position) 100%);
+}
+.stage-player-plane[data-ink="light"] .deck-controls--rounded-rectangle .deck-controls__progress {
+  --deck-track: linear-gradient(to right, var(--deck-ink) 0 var(--deck-position), rgba(222, 242, 255, .31) var(--deck-position) 100%);
+}
+.deck-controls--rounded-rectangle .deck-controls__key-slot {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.deck-controls--rounded-rectangle .deck-controls__key {
+  width: auto;
+  max-width: 100%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+}
+.deck-controls__skip {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  max-width: 42px;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 9px;
+  color: var(--deck-ink);
+  background: transparent;
+  cursor: pointer;
+}
+.deck-controls__skip:hover:not(:disabled) { background: rgba(222, 243, 255, .23); }
+.deck-controls__skip:focus-visible { outline: 2px solid var(--deck-ink); outline-offset: 2px; }
+.deck-controls__skip svg { width: min(68%, 17px); height: min(68%, 17px); }
+.deck-controls--rounded-rectangle .deck-controls__skip:disabled { opacity: .35; }

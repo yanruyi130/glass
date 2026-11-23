@@ -44,7 +44,7 @@ precision highp float;
 varying vec2 v_local;
 uniform sampler2D u_background, u_ink, u_surface;
 uniform float u_radius, u_open, u_weight, u_emphasis, u_aa;
-uniform float u_inkBrightness, u_iconBottom, u_device;
+uniform float u_inkBrightness, u_device;
 uniform float u_weatherRim;
 uniform int u_layer;
 uniform vec2 u_view, u_half;
@@ -163,8 +163,7 @@ void main() {
     } else if (u_layer == 5) {
       float coverage = texture2D(u_ink, uv).a;
       vec3 backdrop = scene(screenPoint(p));
-      float iconTone = 1.0 - smoothstep(0.4, 0.62, dot(mix(tone(backdrop), u_tintColor, u_style.y), vec3(0.213, 0.715, 0.072)));
-      float inkTone = mix(u_inkBrightness, iconTone, step(p.y, u_iconBottom));
+      float inkTone = u_inkBrightness;
       vec3 darkInk = vec3(0.018, 0.029, 0.060) + backdrop * 0.115;
       vec3 lightInk = vec3(0.87, 0.925, 0.987) + backdrop * 0.08;
       float relief = texture2D(u_ink, uv - vec2(0.0, 1.0 / (2.0 * u_half.y))).a * (1.0 - coverage);
@@ -231,31 +230,9 @@ function trackCanvasTexture(initial: HTMLCanvasElement, mipmaps = false) {
 }
 
 function inkMask(context: CanvasRenderingContext2D, geometry: ShapeGeometry, shape: GlassShape, reelAngle: number) {
-  const { width, height } = geometry
-  context.clearRect(0, 0, width, height)
+  context.clearRect(0, 0, geometry.width, geometry.height)
   context.globalAlpha = 1
-  if (shape.id !== 'rounded-rectangle') {
-    paintDeviceInk(context, shape.id, geometry, playerLayout(shape.id), reelAngle)
-    return
-  }
-
-  const pad = width * .087
-  const icon = Math.min(width * .105, 36)
-  context.fillStyle = 'white'
-  context.strokeStyle = 'white'
-  context.lineWidth = 1.35
-  context.lineJoin = 'round'
-  const x = pad, y = pad + 3
-  context.beginPath()
-  context.roundRect(x + icon * .21, y, icon * .72, icon * .56, 4)
-  context.roundRect(x, y + icon * .22, icon * .72, icon * .56, 4)
-  context.stroke()
-  context.textBaseline = 'alphabetic'
-  context.font = '600 ' + Math.round(width * .089) + 'px "Segoe UI", system-ui, sans-serif'
-  context.fillText('Liquid Glass', pad, height - pad - 21)
-  context.font = Math.max(10, Math.round(width * .036)) + 'px "Segoe UI", "Microsoft YaHei", system-ui, sans-serif'
-  context.globalAlpha = .84
-  context.fillText('液态玻璃 · 圆角矩形', pad + 1, height - pad)
+  paintDeviceInk(context, shape.id, geometry, playerLayout(shape.id), reelAngle)
 }
 
 function sameGeometry(a: ShapeGeometry, b: ShapeGeometry) {
@@ -356,7 +333,7 @@ export function createGlassRenderer(canvas: HTMLCanvasElement) {
     u_view: { value: new Vector2() }, u_half: { value: new Vector2() }, u_tone: { value: new Vector3() },
     u_lens: { value: new Vector4() }, u_style: { value: new Vector3() }, u_tintColor: { value: new Vector3() },
     u_radius: { value: 0 }, u_open: { value: 0 }, u_aa: { value: 0 }, u_inkBrightness: { value: 0 },
-    u_iconBottom: { value: 0 }, u_device: { value: 0 },
+    u_device: { value: 0 },
     u_weatherLight: { value: new Vector3(1, 1, 1) }, u_weatherRim: { value: 1 },
     u_weatherRain: { value: 0 }, u_weatherFrost: { value: 0 },
     u_frostPattern: frostTexture, u_frostCoverage: { value: 0 },
@@ -401,7 +378,6 @@ export function createGlassRenderer(canvas: HTMLCanvasElement) {
   }
 
   function updateShape(shape: GlassShape, geometry: ShapeGeometry, reelAngle: number) {
-    common.u_iconBottom.value = shape === roundedRectangle ? -.15 * geometry.height : -.5 * geometry.height
     common.u_device.value = Number(shape !== roundedRectangle)
     mask.width = Math.ceil(geometry.width * 2)
     mask.height = Math.ceil(geometry.height * 2)

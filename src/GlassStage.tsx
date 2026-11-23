@@ -34,7 +34,7 @@ interface Props {
   audio?: AudioInput
   musicBands?: Readonly<{ current: AudioInput }>
   musicPlaying?: boolean
-  renderPlayer?: (appearance: Exclude<ShapeId, 'rounded-rectangle'>) => ReactNode
+  renderPlayer?: (appearance: ShapeId) => ReactNode
   surfaceEffect?: SurfaceEffect
   onSelect: (layer: LayerId) => void
   onExpanded: (expanded: boolean) => void
@@ -433,7 +433,7 @@ export function GlassStage(props: Props) {
       onPointerLeave={event => event.currentTarget.removeAttribute('data-on-shape')} onKeyDown={keyboard}
     />
     <div className="stage-player-plane" ref={playerPlane}>
-      {displayedShape !== 'rounded-rectangle' && props.renderPlayer?.(displayedShape)}
+      {props.renderPlayer?.(displayedShape)}
     </div>
     <span className="sr-only" id="stage-keys">按住并拖动可旋转观察。方向键旋转，Home 恢复默认视角，回车或空格切换分层。</span>
     {unavailable && <p className="renderer-status" role="status">玻璃预览需要可用的 WebGL 2。</p>}
