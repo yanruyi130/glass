@@ -55,7 +55,7 @@ button { cursor: pointer; }
 }
 
 .stage-toolbar { top: 26px; }
-.lab-brand, .stage-actions { display: flex; align-items: center; }
+.lab-brand, .stage-actions, .stage-transport { display: flex; align-items: center; }
 .lab-brand { gap: 11px; }
 .lab-mark, .stage-icon {
   display: grid;
@@ -73,8 +73,9 @@ button { cursor: pointer; }
 .lab-mark svg { width: 25px; height: 25px; }
 .lab-brand h1 { margin: 0; color: white; font-size: .99rem; line-height: 1.3; font-weight: 650; letter-spacing: .03em; }
 .lab-brand p { margin: 4px 0 0; color: #c3d8ef; font: 500 .61rem/1 var(--mono); letter-spacing: .13em; }
-.stage-actions { gap: 7px; pointer-events: auto; }
-.stage-icon, .mode-switch {
+.stage-actions { flex-shrink: 0; gap: 10px; }
+.stage-transport { gap: 7px; pointer-events: auto; }
+.stage-icon, .weather-switch {
   color: #eaf6ff;
   background: rgba(5, 24, 62, .48);
   border: 1px solid rgba(232, 243, 255, .23);
@@ -82,19 +83,21 @@ button { cursor: pointer; }
 }
 .stage-icon { padding: 0; }
 .stage-icon svg { width: 19px; height: 19px; }
-.stage-icon:hover, .mode-switch button:hover { background: rgba(211, 232, 255, .2); }
-.mode-switch { display: flex; gap: 2px; padding: 3px; border-radius: 13px; }
-.mode-switch button {
+.stage-icon:hover, .weather-switch button:hover { background: rgba(211, 232, 255, .2); }
+.weather-switch { display: flex; gap: 2px; padding: 3px; border-radius: 13px; pointer-events: auto; }
+.weather-switch button {
+  display: grid;
+  place-items: center;
+  width: 35px;
+  height: 32px;
+  padding: 0;
   border: 0;
   border-radius: 9px;
-  padding: 0 11px;
-  height: 32px;
   color: #c9dcee;
   background: transparent;
-  font-size: .75rem;
-  white-space: nowrap;
 }
-.mode-switch button[aria-pressed="true"] { background: #ddf1ff; color: #112447; font-weight: 650; }
+.weather-switch button[aria-pressed="true"] { background: #ddf1ff; color: #112447; }
+.weather-switch svg { width: 19px; height: 19px; }
 
 .stage-caption {
   bottom: 19px;
@@ -139,8 +142,8 @@ button { cursor: pointer; }
 
 @media (max-width: 660px) {
   .specimen { height: clamp(408px, 60svh, 540px); }
-  .stage-toolbar { top: 15px; }
   .stage-toolbar, .stage-caption { left: 14px; right: 14px; gap: 8px; }
+  .stage-toolbar { top: 15px; }
   .lab-brand { gap: 7px; }
   .lab-mark { width: 33px; height: 33px; border-radius: 10px; }
   .lab-mark svg { width: 21px; height: 21px; }
@@ -148,13 +151,31 @@ button { cursor: pointer; }
   .lab-brand p { font-size: .5rem; letter-spacing: .07em; }
   .stage-icon { width: 34px; height: 34px; border-radius: 11px; }
   .stage-icon svg { width: 16px; height: 16px; }
-  .stage-actions { gap: 4px; }
-  .mode-switch { border-radius: 11px; padding: 2px; }
-  .mode-switch button { padding: 0 6px; height: 28px; border-radius: 8px; font-size: .68rem; }
+  .stage-actions { gap: 6px; }
+  .stage-transport { gap: 4px; }
+  .weather-switch { gap: 1px; border-radius: 11px; padding: 2px; }
+  .weather-switch button { width: 27px; height: 28px; border-radius: 8px; }
+  .weather-switch svg { width: 17px; height: 17px; }
   .stage-caption { bottom: 11px; font-size: .65rem; }
+}
+
+@media (max-width: 370px) {
+  .lab-mark { display: none; }
 }
 
 @media (max-width: 340px) {
   .stage-toolbar, .stage-caption { left: 10px; right: 10px; }
-  .lab-mark { display: none; }
+}
+
+@media (max-width: 319px) {
+  .stage-toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "brand transport" ". weather";
+    gap: 4px 8px;
+  }
+  .lab-brand { grid-area: brand; }
+  .stage-actions { display: contents; }
+  .stage-transport { grid-area: transport; justify-self: end; }
+  .weather-switch { grid-area: weather; }
 }

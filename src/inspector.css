@@ -240,6 +240,11 @@
   margin: 17px 0 0;
 }
 
+.inspector__surface-weather {
+  border-top: 1px solid var(--inspector-line);
+  padding-top: 12px;
+}
+
 .inspector-range {
   display: grid;
   gap: 1px;

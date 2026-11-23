@@ -66,7 +66,7 @@ const layers: {
     id: 'tint',
     name: 'Tint',
     translation: '染色',
-    description: '薄膜按模式和背景明暗微调玻璃色调，底下的曲线依然可见。',
+    description: '薄膜随天气微调玻璃色调，底下的曲线依然可见。',
     controls: [tintControl],
   },
   {
@@ -95,6 +95,8 @@ type PanelProps = {
   effective: EffectiveMaterial
   ink: InkReading
   samples: boolean
+  rain: { amount: number; slideSpeed: number; onAmount: (value: number) => void; onSlideSpeed: (value: number) => void } | null
+  frost: { coverage: number; onCoverage: (value: number) => void } | null
   onExpanded: (expanded: boolean) => void
   onSelect: (layer: LayerId | null) => void
   onGap: (gap: number) => void
@@ -132,7 +134,7 @@ function RangeControl({ label, display, value, min, max, step, onChange }: {
 }
 
 export function MaterialPanel({
-  expanded, selected, gap, material, effective, ink, samples,
+  expanded, selected, gap, material, effective, ink, samples, rain, frost,
   onExpanded, onSelect, onGap, onParameter, onSamples,
 }: PanelProps) {
   const current = layers.find((layer) => layer.id === selected)
@@ -212,6 +214,22 @@ export function MaterialPanel({
               <div><dt>文字下方亮度</dt><dd>{percentage(ink.luminance)}</dd></div>
               <div><dt>当前墨色</dt><dd>{ink.lightInk ? '浅色' : '深色'}</dd></div>
             </dl>}
+            {rain && <div className="inspector__parameters inspector__surface-weather" role="group" aria-label="表面雨滴">
+              <RangeControl
+                label="雨量" display={rain.amount.toFixed(2) + '×'} value={rain.amount}
+                min={0} max={2} step={.05} onChange={rain.onAmount}
+              />
+              <RangeControl
+                label="滑落速度" display={rain.slideSpeed.toFixed(2) + '×'} value={rain.slideSpeed}
+                min={.25} max={2} step={.05} onChange={rain.onSlideSpeed}
+              />
+            </div>}
+            {frost && <div className="inspector__parameters inspector__surface-weather" role="group" aria-label="玻璃表面霜与冰花">
+              <RangeControl
+                label="霜与冰花覆盖面积" display={frost.coverage + '%'} value={frost.coverage}
+                min={0} max={60} step={1} onChange={frost.onCoverage}
+              />
+            </div>}
             <label className="inspector__sampling">
               <input type="checkbox" role="switch" checked={samples} onChange={(event) => onSamples(event.currentTarget.checked)} />
               <span className="inspector__switch" aria-hidden="true" />

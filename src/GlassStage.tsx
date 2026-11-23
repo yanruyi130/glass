@@ -1,20 +1,28 @@
 import { useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
 import { createBackground, type AudioInput } from './background'
+import { WEATHER_PRESETS, blendClimate, type Climate, type WeatherId } from './climate'
 import { createGlassRenderer, type SurfaceEffect } from './glassRenderer'
-import { INITIAL_READING, LAYERS, clamp, effectiveMaterial, mix, pickMaterialMode, type EffectiveMaterial, type InkReading, type LayerId, type Material, type MaterialMode } from './material'
+import { INITIAL_INK_READING, LAYERS, clamp, effectiveMaterial, mix, prefersLightInk, type EffectiveMaterial, type InkReading, type LayerId, type Material } from './material'
+import { createMusicEnvelope } from './musicEnergy'
 import { PITCH_RANGE, YAW_RANGE, hitLayer, makeProjection, projectedBounds, type Projection, type ViewRotation } from './projection'
 import { GLASS_SHAPES, type Point, type ShapeId } from './shape'
-import { createBackgroundSampler, samplePositions } from './sampling'
+import { createBackgroundSampler, sampleInkPositions } from './sampling'
+import { createSurfaceWeather } from './surfaceWeather'
 
 export const BACKGROUNDS = { currents: createBackground }
 export type BackgroundTheme = keyof typeof BACKGROUNDS
 const DEFAULT_VIEW: ViewRotation = { pitch: 0, yaw: 0 }
+const WEATHER_MS = 2000
+const SCENE_FRAME_MS = 1000 / 30
 
 interface Props {
   theme: BackgroundTheme
   shape: ShapeId
+  weather: WeatherId
+  rainAmount: number
+  slideSpeed: number
   material: Material
-  mode: MaterialMode
+  frostCoverage: number
   expanded: boolean
   selected: LayerId | null
   gap: number
@@ -68,6 +76,8 @@ export function GlassStage(props: Props) {
     const shape = GLASS_SHAPES[shapeId]
     const background = BACKGROUNDS[theme](backgroundCanvas.current!)
     const read = createBackgroundSampler()
+    const musicEnvelope = createMusicEnvelope()
+    const surfaceWeather = createSurfaceWeather()
     let renderer: ReturnType<typeof createGlassRenderer> | null = null
     let contextLost = false
     function installRenderer() {
@@ -80,16 +90,22 @@ export function GlassStage(props: Props) {
     }
     installRenderer()
 
-    let frame = 0, width = 0, height = 0
-    let resized = true, dirty = true, time = 0, previousBackground = 0, sampled = -Infinity
+    let frame = 0, width = 0, height = 0, pixelRatio = 1
+    let resized = true, dirty = true, time = 0, phase = 0, previousTick = 0
+    let previousBackground = -Infinity, sampled = -Infinity
+    let detail = navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 4 ? .76 : 1
+    let load = 0
+    let weather = latest.current.weather
+    let climate = WEATHER_PRESETS[weather]
+    let weatherStarted = 0
+    let climateFrom: Climate | null = null
+    let renderedClimate = climate, renderedTime = time
     let sampleDirty = true, trailingSample = 0
     let resetToken = latest.current.reset
     let view = DEFAULT_VIEW
     let projection: Projection | null = null
     let openness = Number(latest.current.expanded), openFrom = openness, openTo = openness, openAt = 0
-    let reading = INITIAL_READING, autoDark: boolean | undefined
-    let inkDark: boolean | undefined, inkBrightness = 1
-    let currentTone: EffectiveMaterial | null = null, darkness = 1
+    let lightInk: boolean | undefined, inkBrightness = Number(INITIAL_INK_READING.lightInk)
     let displayed: EffectiveMaterial | null = null
     let displayedInk: InkReading | null = null
 
@@ -101,9 +117,9 @@ export function GlassStage(props: Props) {
       width = host.clientWidth
       height = host.clientHeight
       if (width < 1 || height < 1) return
-      const ratio = Math.min(window.devicePixelRatio || 1, 1.6, 1900 / width)
-      background.resize(width, height, ratio)
-      if (!contextLost) renderer?.resize(width, height, ratio)
+      pixelRatio = Math.min(window.devicePixelRatio || 1, 1.6, 1900 / width)
+      background.resize(width, height, pixelRatio * detail)
+      if (!contextLost) renderer?.resize(width, height, pixelRatio)
       resized = true
       wake()
     }
@@ -124,13 +140,41 @@ export function GlassStage(props: Props) {
       window.clearTimeout(trailingSample)
       if (!width || !height) return
       const state = latest.current
+      const elapsed = state.playing && previousTick ? (now - previousTick) / 1000 : 0
+      previousTick = state.playing ? now : 0
+      const delta = elapsed > .20 ? 0 : Math.min(elapsed, .075)
+      if (elapsed > 0 && elapsed < .12 && detail === 1) {
+        load = elapsed > .026 ? load + elapsed : Math.max(0, load - elapsed * .6)
+        if (load > 1.5) {
+          detail = .78
+          background.resize(width, height, pixelRatio * detail)
+          resized = true
+        }
+      }
+
+      const lastSpeed = climate.flowSpeed
+      if (weather !== state.weather) {
+        weather = state.weather
+        climateFrom = climate
+        weatherStarted = now
+      }
+      if (climateFrom) {
+        const amount = state.reducedMotion ? 1 : Math.min(1, (now - weatherStarted) / WEATHER_MS)
+        if (amount === 1) {
+          climate = WEATHER_PRESETS[weather]
+          climateFrom = null
+        } else {
+          climate = blendClimate(climateFrom, WEATHER_PRESETS[weather], easing(amount))
+        }
+      }
+      time += delta
+      phase += delta * (lastSpeed + climate.flowSpeed) / 2
+      const audio = musicEnvelope(delta, state.audio)
+
       if (resetToken !== state.reset) {
         resetToken = state.reset
         view = DEFAULT_VIEW
-        reading = INITIAL_READING
-        autoDark = undefined
-        inkDark = undefined
-        time = 0
+        lightInk = undefined
         resized = true
       }
       const target = Number(state.expanded)
@@ -144,13 +188,12 @@ export function GlassStage(props: Props) {
       const previousOpenness = openness
       openness = mix(openFrom, openTo, easing(progress))
 
-      const backdropChanged = resized || (state.playing && (!previousBackground || now - previousBackground >= 31))
+      const backdropChanged = resized || ((state.playing || climate !== renderedClimate) && now - previousBackground >= SCENE_FRAME_MS - 1)
       if (backdropChanged) {
-        if (state.playing && previousBackground && !resized) time += Math.min(.065, (now - previousBackground) / 1000)
-        background.render(time, state.audio)
+        background.render({ time, phase, climate, audio, detail })
+        renderedClimate = climate
+        renderedTime = time
         previousBackground = now
-      } else if (!state.playing) {
-        previousBackground = 0
       }
 
       const projectionChanged = dirty || openness !== previousOpenness || !projection
@@ -163,72 +206,54 @@ export function GlassStage(props: Props) {
         focus.style.height = (bounds.bottom - bounds.top) + 'px'
       }
 
+      const tone = effectiveMaterial(state.material, renderedClimate.glass)
       sampleDirty ||= projectionChanged || backdropChanged
       if (sampleDirty && (resized || now - sampled >= 78)) {
-        const points = samplePositions(projection)
-        reading = read(background.canvas, points, width, height)
-        const inkReading = read(background.canvas, samplePositions(projection, 'ink'), width, height)
-        const hadReading = autoDark !== undefined
-        autoDark = pickMaterialMode(reading.luminance, autoDark)
-        inkDark = pickMaterialMode(inkReading.luminance, inkDark)
-        if (!displayedInk || displayedInk.lightInk !== inkDark || Math.abs(displayedInk.luminance - inkReading.luminance) > .01) {
-          displayedInk = { luminance: inkReading.luminance, lightInk: inkDark }
+        const [r, g, b] = renderedClimate.glass.tintColor
+        const tintLuminance = .2126 * r + .7152 * g + .0722 * b
+        const source = read(background.canvas, sampleInkPositions(projection), width, height)
+        const luminance = mix(clamp(source * tone.brightness), tintLuminance, tone.tint)
+        const firstReading = lightInk === undefined
+        lightInk = prefersLightInk(luminance, lightInk)
+        if (firstReading) inkBrightness = Number(lightInk)
+        if (!displayedInk || displayedInk.lightInk !== lightInk || Math.abs(displayedInk.luminance - luminance) > .01) {
+          displayedInk = { luminance, lightInk }
           state.onInk(displayedInk)
         }
-        if (!hadReading) currentTone = null
         sampled = now
         sampleDirty = false
       }
-      if (state.samples && (dirty || animating || openness !== previousOpenness)) {
-        samplePositions(projection).forEach((point, index) => {
+      if (state.samples && projectionChanged) {
+        sampleInkPositions(projection).forEach((point, index) => {
           const marker = markers.children[index] as HTMLElement
           marker.style.transform = 'translate(' + point.x + 'px,' + point.y + 'px)'
         })
       }
 
-      const tone = effectiveMaterial(state.material, reading, state.mode === 'auto' ? (autoDark ?? true) : state.mode === 'dark')
-      const blend = currentTone && !state.reducedMotion ? .19 : 1
-      const previousTone = currentTone
-      const previousDarkness = darkness
       const previousInkBrightness = inkBrightness
-      currentTone = {
-        dark: tone.dark,
-        tint: mix(currentTone?.tint ?? tone.tint, tone.tint, blend),
-        brightness: mix(currentTone?.brightness ?? tone.brightness, tone.brightness, blend),
-        saturation: mix(currentTone?.saturation ?? tone.saturation, tone.saturation, blend),
-      }
-      darkness = previousTone ? mix(darkness, Number(tone.dark), blend) : Number(tone.dark)
-      const targetInk = Number(inkDark ?? tone.dark)
-      inkBrightness = previousTone ? mix(inkBrightness, targetInk, blend) : targetInk
-      const settling = Math.abs(currentTone.tint - tone.tint) > .001 || Math.abs(currentTone.brightness - tone.brightness) > .001
-        || Math.abs(currentTone.saturation - tone.saturation) > .001 || Math.abs(darkness - Number(tone.dark)) > .001
-        || Math.abs(inkBrightness - targetInk) > .001
-      if (!settling) {
-        currentTone = tone
-        darkness = Number(tone.dark)
-        inkBrightness = targetInk
-      }
-      if (!displayed || displayed.dark !== tone.dark || Math.abs(displayed.tint - tone.tint) > .003
+      const targetInk = Number(lightInk ?? INITIAL_INK_READING.lightInk)
+      inkBrightness = state.reducedMotion ? targetInk : mix(inkBrightness, targetInk, .19)
+      const settling = Math.abs(inkBrightness - targetInk) > .001
+      if (!settling) inkBrightness = targetInk
+      if (!displayed || Math.abs(displayed.tint - tone.tint) > .003
         || Math.abs(displayed.saturation - tone.saturation) > .007 || Math.abs(displayed.brightness - tone.brightness) > .007) {
         displayed = tone
         state.onEffective(tone)
       }
-      const toneChanged = !previousTone || previousTone.tint !== currentTone.tint || previousTone.brightness !== currentTone.brightness
-        || previousTone.saturation !== currentTone.saturation || previousDarkness !== darkness || previousInkBrightness !== inkBrightness
-      if (!contextLost && (projectionChanged || backdropChanged || toneChanged)) {
-        const material = state.audio ? {
-          ...state.material,
-          edge: state.material.edge * (1 + state.audio.low * .1),
-          light: state.material.light * (1 + state.audio.high * .16),
-        } : state.material
+      const inkChanged = previousInkBrightness !== inkBrightness
+      if (!contextLost && (projectionChanged || backdropChanged || inkChanged)) {
+        const droplets = renderedClimate.surfaceRain > .002 && state.rainAmount > 0
+          ? surfaceWeather.sample(projection.geometry, renderedTime, state.rainAmount, state.slideSpeed)
+          : null
         renderer?.render(background.canvas, backdropChanged, {
-          width, height, projection, material, effective: currentTone,
-          darkness, inkBrightness, selected: state.selected, time, surfaceEffect: state.surfaceEffect ?? null,
+          width, height, projection, material: state.material, effective: tone,
+          frostCoverage: state.frostCoverage, inkBrightness, selected: state.selected, time: renderedTime, surfaceEffect: state.surfaceEffect ?? null,
+          climate: renderedClimate, rainAmount: state.rainAmount, droplets,
         })
       }
       dirty = false
       resized = false
-      if (state.playing || animating || settling) frame = requestAnimationFrame(tick)
+      if (state.playing || animating || settling || climateFrom || climate !== renderedClimate) frame = requestAnimationFrame(tick)
       else if (sampleDirty) trailingSample = window.setTimeout(wake, Math.max(0, sampled + 78 - now))
     }
 

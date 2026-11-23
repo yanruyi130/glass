@@ -51,9 +51,10 @@ export function makeProjection(width: number, height: number, shape: GlassShape,
     width, height, camera, orientation, geometry: shape.size(width), scale: 1, spread: open * gap, open,
   }
   const side = width < 600 ? 11 : 22
+  const top = width < 320 ? 90 : 68
   const fits = () => {
     const bounds = projectedBounds(projection)
-    return bounds.left >= side && bounds.right <= width - side && bounds.top >= 68 && bounds.bottom <= height - 23
+    return bounds.left >= side && bounds.right <= width - side && bounds.top >= top && bounds.bottom <= height - 23
   }
   // Fit wide angles on a phone by scaling uniformly around the fixed pivot.
   if (!fits()) {

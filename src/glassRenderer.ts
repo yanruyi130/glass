@@ -1,9 +1,13 @@
 /* WebGL blur, signed-distance lens and dispersion adapted from Glasswork by
  * Kubai087 (MIT). See public/licenses/glasswork-MIT.txt. */
-import { CanvasTexture, ExtrudeGeometry, Group, LinearFilter, LinearMipmapLinearFilter, Matrix4, Mesh, MeshBasicMaterial, PlaneGeometry, Scene, ShaderMaterial, Shape, Vector2, Vector3, Vector4, WebGLRenderer } from 'three'
+import { CanvasTexture, DataTexture, ExtrudeGeometry, Group, LinearFilter, LinearMipmapLinearFilter, Matrix4, Mesh, MeshBasicMaterial, PlaneGeometry, Scene, ShaderMaterial, Shape, Vector2, Vector3, Vector4, WebGLRenderer } from 'three'
+import type { Climate } from './climate'
+import { createFrostPattern } from './frostPattern'
 import { LAYERS, type EffectiveMaterial, type LayerId, type Material } from './material'
+import { PLAYER_CLEAR_REGIONS } from './playerLayout'
 import { layerDepth, type Projection } from './projection'
 import type { GlassShape, ShapeGeometry } from './shape'
+import { RAIN_DROP_LIMIT, RAIN_TRAIL_LIMIT, surfaceWeatherGLSL } from './surfaceWeather'
 
 export type SurfaceEffect = (context: CanvasRenderingContext2D, geometry: ShapeGeometry, time: number) => void
 
@@ -13,11 +17,14 @@ interface Frame {
   projection: Projection
   material: Material
   effective: EffectiveMaterial
-  darkness: number
+  frostCoverage: number
   inkBrightness: number
   selected: LayerId | null
   time: number
   surfaceEffect: SurfaceEffect | null
+  climate: Climate
+  rainAmount: number
+  droplets: { drops: Float32Array; trails: Float32Array } | null
 }
 
 const vertex = `
@@ -35,11 +42,13 @@ varying vec2 v_local;
 uniform sampler2D u_background, u_ink, u_surface;
 uniform float u_radius, u_open, u_weight, u_emphasis, u_aa;
 uniform float u_inkBrightness;
+uniform float u_weatherRim;
 uniform int u_layer;
 uniform vec2 u_view, u_half;
 uniform float u_pad;
 uniform vec3 u_tone;
-uniform vec4 u_lens, u_style;
+uniform vec4 u_lens;
+uniform vec3 u_style, u_tintColor;
 uniform mat4 u_localToClip;
 ${shape.distanceGLSL}
 
@@ -86,6 +95,8 @@ float band(float x, float center, float width) {
   return exp(-v * v);
 }
 
+${surfaceWeatherGLSL}
+
 // Every pass samples the source canvas at the projected coordinates of
 // its own plane. The transparent passes never sample the composited stack.
 void main() {
@@ -125,7 +136,7 @@ void main() {
         alpha = inside * smoothstep(0.0, 1.3, amount) * mix(1.0, 0.87, openGuide);
       }
     } else if (u_layer == 3) {
-      color = mix(vec3(1.0, 0.989, 0.972), vec3(0.118, 0.118, 0.133), u_style.w);
+      color = u_tintColor;
       alpha = inside * u_style.y;
     } else if (u_layer == 4) {
       if (depth < 13.0 && inside > 0.0) {
@@ -135,13 +146,14 @@ void main() {
         float catchLight = band(depth, 0.86, 0.8) * (0.11 + 0.68 * upper + 0.25 * lower);
         float bevel = band(depth, 4.0, 2.2) * (0.018 + 0.135 * upper + 0.037 * lower);
         float insideGlint = band(depth, 8.0, 2.8) * 0.035 * upper;
-        color = mix(vec3(0.67, 0.84, 1.0), vec3(1.0, 0.984, 0.925), 0.26 + upper * 0.64);
-        alpha = inside * (catchLight + bevel + insideGlint) * u_style.z * mix(1.0, 0.83, u_style.w);
+        vec3 baseLight = mix(vec3(0.67, 0.84, 1.0), vec3(1.0, 0.984, 0.925), 0.26 + upper * 0.64);
+        color = mix(baseLight, u_weatherLight, 0.30 + upper * 0.16);
+        alpha = inside * (catchLight + bevel + insideGlint) * u_style.z * u_weatherRim;
       }
     } else if (u_layer == 5) {
       float coverage = texture2D(u_ink, uv).a;
       vec3 backdrop = scene(screenPoint(p));
-      float iconTone = 1.0 - smoothstep(0.4, 0.62, dot(backdrop, vec3(0.213, 0.715, 0.072)));
+      float iconTone = 1.0 - smoothstep(0.4, 0.62, dot(mix(tone(backdrop), u_tintColor, u_style.y), vec3(0.213, 0.715, 0.072)));
       float inkTone = mix(u_inkBrightness, iconTone, step(p.y, -u_half.y * 0.3));
       vec3 darkInk = vec3(0.018, 0.029, 0.060) + backdrop * 0.115;
       vec3 lightInk = vec3(0.87, 0.925, 0.987) + backdrop * 0.08;
@@ -150,10 +162,14 @@ void main() {
       color = (mix(darkInk, lightInk, inkTone) * coverage + mix(lightInk, darkInk, inkTone) * relief)
         / max(0.001, coverage + relief);
       alpha = (coverage + relief) * inside;
-    } else {
+    } else if (u_layer == 6) {
       vec4 effect = texture2D(u_surface, uv);
       color = effect.rgb;
       alpha = effect.a * inside;
+    } else {
+      vec4 effect = weatherSurface(p, inside);
+      color = effect.rgb;
+      alpha = effect.a;
     }
   }
 
@@ -169,13 +185,34 @@ void main() {
   gl_FragColor = vec4(contribution, alpha);
 }`
 
-function canvasTexture(canvas: HTMLCanvasElement) {
-  const texture = new CanvasTexture(canvas)
-  texture.flipY = false
-  texture.minFilter = LinearFilter
-  texture.magFilter = LinearFilter
-  texture.generateMipmaps = false
-  return texture
+function trackCanvasTexture(initial: HTMLCanvasElement, mipmaps = false) {
+  function create(canvas: HTMLCanvasElement) {
+    const texture = new CanvasTexture(canvas)
+    texture.flipY = false
+    texture.minFilter = mipmaps ? LinearMipmapLinearFilter : LinearFilter
+    texture.magFilter = LinearFilter
+    texture.generateMipmaps = mipmaps
+    if (mipmaps) texture.anisotropy = 4
+    return texture
+  }
+
+  const uniform = { value: create(initial) }
+  let source = initial, width = initial.width, height = initial.height
+  return {
+    uniform,
+    update(canvas: HTMLCanvasElement) {
+      // WebGL 2 texture storage keeps its original size after a canvas resize.
+      if (canvas !== source || canvas.width !== width || canvas.height !== height) {
+        uniform.value.dispose()
+        uniform.value = create(canvas)
+        source = canvas
+        width = canvas.width
+        height = canvas.height
+      } else {
+        uniform.value.needsUpdate = true
+      }
+    },
+  }
 }
 
 function inkMask(context: CanvasRenderingContext2D, geometry: ShapeGeometry) {
@@ -214,6 +251,7 @@ const edgeFragment = `
 uniform sampler2D u_background;
 uniform vec2 u_pixels;
 uniform float u_opacity, u_light;
+uniform vec3 u_lightColor;
 varying vec3 v_normal;
 varying float v_depth;
 void main() {
@@ -223,7 +261,8 @@ void main() {
   vec3 transmission = texture2D(u_background, clamp(uv - shift, 0.0, 1.0)).rgb;
   float key = max(0.0, dot(normal, normalize(vec3(-0.5, 0.75, 0.65))));
   float glint = (0.10 + 0.33 * key) * u_light;
-  vec3 color = mix(transmission * (0.80 + 0.16 * v_depth), vec3(0.74, 0.91, 1.0), clamp(glint, 0.0, 0.72));
+  vec3 rimColor = mix(vec3(0.74, 0.91, 1.0), u_lightColor, 0.36);
+  vec3 color = mix(transmission * (0.80 + 0.16 * v_depth), rimColor, clamp(glint, 0.0, 0.72));
   float alpha = u_opacity * (0.50 + 0.28 * key);
   gl_FragColor = vec4(color * alpha, alpha);
 }`
@@ -243,17 +282,41 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, shape: GlassShape
   const maskContext = mask.getContext('2d')!
   const surface = document.createElement('canvas')
   const surfaceContext = surface.getContext('2d')!
-  const backgroundTexture = canvasTexture(document.createElement('canvas'))
-  const maskTexture = canvasTexture(mask)
-  maskTexture.generateMipmaps = true
-  maskTexture.minFilter = LinearMipmapLinearFilter
-  maskTexture.anisotropy = 4
-  const surfaceTexture = canvasTexture(surface)
+  const backgroundTexture = trackCanvasTexture(document.createElement('canvas'))
+  const maskTexture = trackCanvasTexture(mask, true)
+  const surfaceTexture = trackCanvasTexture(surface)
+  const emptyRain: NonNullable<Frame['droplets']> = {
+    drops: new Float32Array(RAIN_DROP_LIMIT * 4), trails: new Float32Array(RAIN_TRAIL_LIMIT * 8),
+  }
+  const frostTexture = { value: new DataTexture(new Uint8Array(4), 1, 1) }
+  frostTexture.value.needsUpdate = true
+  let frostGeometry: ShapeGeometry | null = null
+  let frostLimit = 0
+
+  function prepareFrost(geometry: ShapeGeometry) {
+    if (frostGeometry && frostGeometry.width === geometry.width && frostGeometry.height === geometry.height
+      && frostGeometry.radius === geometry.radius) return
+    const pattern = createFrostPattern(shape, geometry, PLAYER_CLEAR_REGIONS)
+    const atlas = new DataTexture(pattern.pixels, pattern.width, pattern.height)
+    atlas.flipY = false
+    atlas.minFilter = LinearFilter
+    atlas.magFilter = LinearFilter
+    atlas.needsUpdate = true
+    frostTexture.value.dispose()
+    frostTexture.value = atlas
+    frostGeometry = geometry
+    frostLimit = pattern.maxCoverage
+  }
+
   const common = {
-    u_background: { value: backgroundTexture }, u_ink: { value: maskTexture }, u_surface: { value: surfaceTexture },
+    u_background: backgroundTexture.uniform, u_ink: maskTexture.uniform, u_surface: surfaceTexture.uniform,
     u_view: { value: new Vector2() }, u_half: { value: new Vector2() }, u_tone: { value: new Vector3() },
-    u_lens: { value: new Vector4() }, u_style: { value: new Vector4() },
+    u_lens: { value: new Vector4() }, u_style: { value: new Vector3() }, u_tintColor: { value: new Vector3() },
     u_radius: { value: 0 }, u_open: { value: 0 }, u_aa: { value: 0 }, u_inkBrightness: { value: 0 },
+    u_weatherLight: { value: new Vector3(1, 1, 1) }, u_weatherRim: { value: 1 },
+    u_weatherRain: { value: 0 }, u_weatherFrost: { value: 0 },
+    u_frostPattern: frostTexture, u_frostCoverage: { value: 0 },
+    u_rainDrops: { value: emptyRain.drops }, u_rainTrails: { value: emptyRain.trails },
   }
   const planeGeometry = new PlaneGeometry(2, 2)
   const fragmentShader = fragment(shape)
@@ -271,13 +334,16 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, shape: GlassShape
   }
   const layers = LAYERS.map((_, index) => createLayer(index))
   const surfaceLayer = createLayer(6, 3.5)
-  const allPlanes = [...layers, surfaceLayer]
+  // Weather belongs to the Rim light surface. Its mesh only adds local coverage.
+  const weatherLayer = createLayer(7, 4.5)
+  const allPlanes = [...layers, surfaceLayer, weatherLayer]
   const viewProjection = new Matrix4()
 
   const face = new MeshBasicMaterial({ visible: false })
   const edgeUniforms = {
-    u_background: { value: backgroundTexture }, u_pixels: { value: new Vector2() },
+    u_background: backgroundTexture.uniform, u_pixels: { value: new Vector2() },
     u_opacity: { value: 1 }, u_light: { value: 1 },
+    u_lightColor: common.u_weatherLight,
   }
   const side = new ShaderMaterial({ ...compositing, uniforms: edgeUniforms, vertexShader: edgeVertex, fragmentShader: edgeFragment })
   let edge: Mesh<ExtrudeGeometry, [MeshBasicMaterial, ShaderMaterial]> | null = null
@@ -288,7 +354,7 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, shape: GlassShape
     mask.height = Math.ceil(geometry.height * 2)
     maskContext.scale(mask.width / geometry.width, mask.height / geometry.height)
     inkMask(maskContext, geometry)
-    maskTexture.needsUpdate = true
+    maskTexture.update(mask)
     const outline = new Shape(shape.outline(geometry).map(({ x, y }) => new Vector2(x, -y)))
     const extrusion = new ExtrudeGeometry(outline, { depth: EDGE_DEPTH, bevelEnabled: false })
     if (edge) {
@@ -309,12 +375,9 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, shape: GlassShape
       renderer.getDrawingBufferSize(edgeUniforms.u_pixels.value)
     },
     render(source: HTMLCanvasElement, backgroundChanged: boolean, frame: Frame) {
-      const { projection, material, effective } = frame
+      const { projection, material, effective, climate } = frame
       const { geometry, orientation, camera, scale, open } = projection
-      if (backgroundChanged || backgroundTexture.image !== source) {
-        backgroundTexture.image = source
-        backgroundTexture.needsUpdate = true
-      }
+      if (backgroundChanged || backgroundTexture.uniform.value.image !== source) backgroundTexture.update(source)
       if (geometryWidth !== geometry.width) {
         geometryWidth = geometry.width
         updateShape(geometry)
@@ -325,7 +388,7 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, shape: GlassShape
         surface.height = Math.ceil(geometry.height * 2)
         surfaceContext.scale(surface.width / geometry.width, surface.height / geometry.height)
         frame.surfaceEffect(surfaceContext, geometry, frame.time)
-        surfaceTexture.needsUpdate = true
+        surfaceTexture.update(surface)
       }
 
       common.u_view.value.set(frame.width, frame.height)
@@ -335,25 +398,37 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, shape: GlassShape
       common.u_aa.value = Math.max(.35, .62 / (canvas.width / frame.width * scale))
       common.u_tone.value.set(material.blur, effective.saturation, effective.brightness)
       common.u_lens.value.set(material.rimWidth, material.edge, material.power, material.dispersion)
-      common.u_style.value.set(material.shadow, effective.tint, material.light, frame.darkness)
+      common.u_style.value.set(material.shadow, effective.tint, material.light)
+      common.u_tintColor.value.set(...climate.glass.tintColor)
       common.u_inkBrightness.value = frame.inkBrightness
+      common.u_weatherLight.value.set(...climate.rimTint)
+      common.u_weatherRim.value = climate.rimLight
+      common.u_weatherRain.value = frame.droplets ? climate.surfaceRain * Math.min(1, frame.rainAmount) : 0
+      const snowVisible = climate.frost > .002 && frame.frostCoverage > 0
+      if (snowVisible) prepareFrost(geometry)
+      common.u_weatherFrost.value = snowVisible ? climate.frost : 0
+      common.u_frostCoverage.value = snowVisible ? Math.min(frame.frostCoverage, frostLimit) : 0
+      common.u_rainDrops.value = frame.droplets?.drops ?? emptyRain.drops
+      common.u_rainTrails.value = frame.droplets?.trails ?? emptyRain.trails
+      weatherLayer.mesh.visible = common.u_weatherRain.value > .002 || snowVisible
 
       pivot.quaternion.copy(orientation)
       pivot.scale.setScalar(scale)
       edgeUniforms.u_opacity.value = Math.max(0, 1 - open * 4)
-      edgeUniforms.u_light.value = material.light
+      edgeUniforms.u_light.value = material.light * climate.rimLight
       if (edge) {
         edge.visible = edgeUniforms.u_opacity.value > 0
         edge.position.z = layerDepth(projection, 4) - EDGE_DEPTH
       }
 
       for (const [index, { mesh, uniforms }] of allPlanes.entries()) {
-        const emphasized = frame.selected === LAYERS[index]
-        uniforms.u_weight.value = index < LAYERS.length && frame.selected && !emphasized ? 1 - .64 * open : 1
+        const selectedLayer = index === 7 ? 'light' : LAYERS[index]
+        const emphasized = frame.selected === selectedLayer
+        uniforms.u_weight.value = selectedLayer && frame.selected && !emphasized ? 1 - .64 * open : 1
         uniforms.u_emphasis.value = Number(emphasized)
         const pad = uniforms.u_pad.value
         mesh.scale.set(geometry.width / 2 + pad, geometry.height / 2 + pad, 1)
-        mesh.position.z = layerDepth(projection, index === LAYERS.length ? 3 : index)
+        mesh.position.z = layerDepth(projection, index === 7 ? 4 : index === 6 ? 3 : index)
       }
       pivot.updateMatrixWorld(true)
       viewProjection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse)
@@ -368,9 +443,10 @@ export function createGlassRenderer(canvas: HTMLCanvasElement, shape: GlassShape
       edge?.geometry.dispose()
       face.dispose()
       side.dispose()
-      backgroundTexture.dispose()
-      maskTexture.dispose()
-      surfaceTexture.dispose()
+      backgroundTexture.uniform.value.dispose()
+      maskTexture.uniform.value.dispose()
+      surfaceTexture.uniform.value.dispose()
+      frostTexture.value.dispose()
       renderer.dispose()
     },
   }

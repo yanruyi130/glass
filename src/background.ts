@@ -1,222 +1,346 @@
-export type AudioInput = Readonly<{ low: number; mid: number; high: number; energy: number }>;
-type Point = readonly [number, number];
-type Cubic = readonly [number, number, number, number, number, number];
-type Curve = readonly [Point, Cubic, Cubic];
-type ColorStop = readonly [number, string];
+import type { Climate, Rgb } from './climate'
+import { clamp, mix } from './material'
 
-const SILENT: AudioInput = Object.freeze({ low: 0, mid: 0, high: 0, energy: 0 });
+export type AudioInput = Readonly<{ low: number; mid: number; high: number; energy: number }>
 
-function gradient(
-  context: CanvasRenderingContext2D,
-  x0: number,
-  y0: number,
-  x1: number,
-  y1: number,
-  stops: readonly ColorStop[],
-) {
-  const fill = context.createLinearGradient(x0, y0, x1, y1);
-  for (const [position, color] of stops) fill.addColorStop(position, color);
-  return fill;
+export interface BackgroundFrame {
+  time: number
+  phase: number
+  climate: Climate
+  audio: AudioInput
+  detail: number
 }
 
-function glow(context: CanvasRenderingContext2D, x: number, y: number, radius: number, color: string) {
-  const fill = context.createRadialGradient(x, y, 0, x, y, radius);
-  fill.addColorStop(0, color);
-  fill.addColorStop(1, 'transparent');
-  context.fillStyle = fill;
-  context.fillRect(0, 0, 1, 1);
+type Point = readonly [number, number]
+type Cubic = readonly [number, number, number, number, number, number]
+type Curve = readonly [Point, Cubic, Cubic]
+type Axis = readonly [number, number, number, number]
+
+const FOUR = [0, .33, .66, 1]
+const FIVE = [0, .27, .54, .74, 1]
+const SKY = [0, .36, .7, 1]
+const TWO_PI = Math.PI * 2
+
+function rgba([r, g, b]: Rgb, alpha = 1) {
+  return 'rgba(' + Math.round(r) + ',' + Math.round(g) + ',' + Math.round(b) + ',' + alpha + ')'
+}
+
+function gradient(
+  context: CanvasRenderingContext2D, axis: Axis, colors: readonly Rgb[],
+  positions: readonly number[], alphas?: readonly number[],
+) {
+  const fill = context.createLinearGradient(...axis)
+  for (const [index, color] of colors.entries()) {
+    fill.addColorStop(positions[index], rgba(color, alphas?.[index]))
+  }
+  return fill
+}
+
+function glow(context: CanvasRenderingContext2D, x: number, y: number, radius: number, color: Rgb, alpha: number) {
+  if (alpha < .002) return
+  const fill = context.createRadialGradient(x, y, 0, x, y, radius)
+  fill.addColorStop(0, rgba(color, alpha))
+  fill.addColorStop(.43, rgba(color, alpha * .36))
+  fill.addColorStop(1, rgba(color, 0))
+  context.fillStyle = fill
+  context.fillRect(x - radius, y - radius, radius * 2, radius * 2)
 }
 
 function trace(context: CanvasRenderingContext2D, curve: Curve, offset: number, reversed = false) {
-  const [start, first, second] = curve;
-  const [firstX1, firstY1, firstX2, firstY2, middleX, middleY] = first;
-  const [secondX1, secondY1, secondX2, secondY2, endX, endY] = second;
-  let cubics: readonly Cubic[] = [first, second];
-
+  const [start, first, second] = curve
   if (reversed) {
-    context.lineTo(endX, endY + offset);
-    cubics = [
-      [secondX2, secondY2, secondX1, secondY1, middleX, middleY],
-      [firstX2, firstY2, firstX1, firstY1, start[0], start[1]],
-    ];
+    context.lineTo(second[4], second[5] + offset)
+    context.bezierCurveTo(second[2], second[3] + offset, second[0], second[1] + offset, first[4], first[5] + offset)
+    context.bezierCurveTo(first[2], first[3] + offset, first[0], first[1] + offset, start[0], start[1] + offset)
   } else {
-    context.moveTo(start[0], start[1] + offset);
+    context.moveTo(start[0], start[1] + offset)
+    for (const [x1, y1, x2, y2, x3, y3] of [first, second]) {
+      context.bezierCurveTo(x1, y1 + offset, x2, y2 + offset, x3, y3 + offset)
+    }
   }
+}
 
-  for (const [x1, y1, x2, y2, x3, y3] of cubics) {
-    context.bezierCurveTo(x1, y1 + offset, x2, y2 + offset, x3, y3 + offset);
+function cubic(start: number, a: number, b: number, end: number, t: number) {
+  const s = 1 - t
+  return start * s ** 3 + 3 * a * s * s * t + 3 * b * s * t * t + end * t ** 3
+}
+
+function heightAt(curve: Curve, x: number) {
+  const [start, first, second] = curve
+  const [x0, y0] = x <= first[4] ? start : [first[4], first[5]]
+  const [x1, y1, x2, y2, x3, y3] = x <= first[4] ? first : second
+  let low = 0, high = 1
+  for (let step = 0; step < 10; step++) {
+    const middle = (low + high) / 2
+    if (cubic(x0, x1, x2, x3, middle) < x) low = middle
+    else high = middle
   }
+  return cubic(y0, y1, y2, y3, (low + high) / 2)
+}
+
+function bend(curve: Curve, phase: number, amplitude: number, offset: number, detail: number): Curve {
+  const y = (x: number, height: number) => height + amplitude * (
+    Math.sin(x * 4.8 + phase + offset) * .017
+      + Math.sin(x * 8.7 - phase * .76 + offset * 1.35) * .011
+      + Math.sin(x * 13 + phase * 1.51 + offset) * (.002 + detail * .006)
+  )
+  const move = ([x1, y1, x2, y2, x3, y3]: Cubic): Cubic => [x1, y(x1, y1), x2, y(x2, y2), x3, y(x3, y3)]
+  return [[curve[0][0], y(...curve[0])], move(curve[1]), move(curve[2])]
 }
 
 function sheetPath(context: CanvasRenderingContext2D, curve: Curve, offset: number) {
-  context.beginPath();
-  trace(context, curve, offset);
-  context.lineTo(curve[2][4], 1.3);
-  context.lineTo(curve[0][0], 1.3);
-  context.closePath();
+  context.beginPath()
+  trace(context, curve, offset)
+  context.lineTo(curve[2][4], 1.3)
+  context.lineTo(curve[0][0], 1.3)
+  context.closePath()
 }
 
 function sheet(context: CanvasRenderingContext2D, curve: Curve, offset: number, fill: CanvasGradient) {
-  sheetPath(context, curve, offset);
-  context.fillStyle = fill;
-  context.fill();
+  sheetPath(context, curve, offset)
+  context.fillStyle = fill
+  context.fill()
 }
 
-function lightSheet(context: CanvasRenderingContext2D, curve: Curve, offset: number, x: number, y: number, radius: number, color: string) {
-  context.save();
-  sheetPath(context, curve, offset);
-  context.clip();
-  glow(context, x, y, radius, color);
-  context.restore();
+function sheetGlow(
+  context: CanvasRenderingContext2D, curve: Curve, x: number, y: number, radius: number, color: Rgb, alpha: number,
+) {
+  if (alpha < .002) return
+  context.save()
+  sheetPath(context, curve, 0)
+  context.clip()
+  glow(context, x, y, radius, color, alpha)
+  context.restore()
 }
 
 function ribbon(context: CanvasRenderingContext2D, curve: Curve, offset: number, width: number, fill: CanvasGradient) {
-  context.beginPath();
-  trace(context, curve, offset);
-  trace(context, curve, offset + width, true);
-  context.closePath();
-  context.fillStyle = fill;
-  context.fill();
+  context.beginPath()
+  trace(context, curve, offset)
+  trace(context, curve, offset + width, true)
+  context.closePath()
+  context.fillStyle = fill
+  context.fill()
 }
 
-/**
- * Paints the original artwork into the same canvas sampled by the material.
- * Time is in seconds and controlled by the caller so pausing freezes both views.
- */
+const wrap = (value: number) => value - Math.floor(value)
+const smooth = (value: number) => {
+  const t = clamp(value)
+  return t * t * (3 - 2 * t)
+}
+
+function hash(x: number, y: number, seed: number) {
+  const n = Math.imul(x + seed, 374761393) + Math.imul(y, 668265263)
+  const scrambled = Math.imul(n ^ (n >>> 13), 1274126177)
+  return ((scrambled ^ (scrambled >>> 16)) >>> 0) / 4294967295
+}
+
+function noise(x: number, y: number, seed: number): number {
+  const i = Math.floor(x), j = Math.floor(y)
+  const u = smooth(x - i), v = smooth(y - j)
+  return mix(mix(hash(i, j, seed), hash(i + 1, j, seed), u), mix(hash(i, j + 1, seed), hash(i + 1, j + 1, seed), u), v)
+}
+
+function cloudStamp(seed: number, depth: number) {
+  const canvas = document.createElement('canvas')
+  canvas.width = 176
+  canvas.height = 64
+  const context = canvas.getContext('2d')
+  if (!context) return canvas
+  const pixels = context.createImageData(canvas.width, canvas.height)
+  for (let y = 0; y < canvas.height; y++) {
+    for (let x = 0; x < canvas.width; x++) {
+      const u = (x + .5) / canvas.width, v = (y + .5) / canvas.height
+      const center = .49 + (noise(u * 4.7, 6, seed) - .5) * .31
+      const shape = Math.sin(u * Math.PI) ** .72 * clamp(1 - (Math.abs(v - center) / .47) ** 2)
+      const billow = noise(u * 8 + 1.3, v * 4, seed) * .58 + noise(u * 18.7, v * 9.2, seed + 7) * .29
+        + noise(u * 39.1, v * 17.3, seed + 13) * .13
+      const fade = smooth(u * 8) * smooth((1 - u) * 8) * smooth(v * 8) * smooth((1 - v) * 7)
+      const density = smooth((shape * .70 + billow * .42 - .43) * 2.85)
+      const ink = clamp((1 - v) * .90 + (1 - density) * .17)
+      const p = (y * canvas.width + x) * 4
+      pixels.data[p] = mix(37 - depth * 13, 181, ink)
+      pixels.data[p + 1] = mix(52 - depth * 11, 188, ink)
+      pixels.data[p + 2] = mix(80 - depth * 8, 217, ink)
+      pixels.data[p + 3] = density * fade * 241
+    }
+  }
+  context.putImageData(pixels, 0, 0)
+  return canvas
+}
+
+function paintClouds(context: CanvasRenderingContext2D, stamps: readonly HTMLCanvasElement[], time: number, amount: number) {
+  const banks = [
+    [-.48, .035, 1.1, .31, .33, .043],
+    [.34, .083, .94, .27, .46, -.054],
+    [-.17, .15, .97, .36, .56, .074],
+    [.41, .205, .86, .32, .62, -.086],
+  ]
+  context.save()
+  for (const [index, [x, y, w, h, alpha, glide]] of banks.entries()) {
+    const n = time * (.056 + index * .012) + 1.19 * index
+    context.globalAlpha = alpha * amount
+    context.drawImage(stamps[index % stamps.length], x + Math.sin(n) * glide, y + Math.sin(n * .76) * .011, w, h)
+  }
+  context.restore()
+}
+
+const PARTICLES = Array.from({ length: 64 }, (_, index) => ({
+  x: hash(index, 1, 417), y: hash(index, 2, 417), size: hash(index, 3, 417),
+  pace: hash(index, 4, 417), phase: hash(index, 5, 417),
+}))
+
+function paintRain(
+  context: CanvasRenderingContext2D, curve: Curve, width: number, height: number,
+  time: number, amount: number, detail: number, color: Rgb,
+) {
+  const count = Math.round(Math.min(42, 17 + width * .021) * detail)
+  for (let i = 0; i < count; i++) {
+    const { x, y, size, pace } = PARTICLES[i]
+    const xx = wrap(x - time * (.027 + pace * .014)) * width
+    const yy = wrap(y + time * (.19 + pace * .25)) * (height + 30) - 15
+    const length = 6 + size * 11
+    context.lineWidth = .56 + size * .34
+    context.strokeStyle = rgba(color, amount * (.057 + size * .107))
+    context.beginPath()
+    context.moveTo(xx, yy)
+    context.lineTo(xx - length * .29, yy + length)
+    context.stroke()
+  }
+
+  for (let i = 0; i < Math.round(8 * detail); i++) {
+    const { x, size, pace, phase } = PARTICLES[i + 48]
+    const cycle = wrap(phase + time * (.17 + pace * .19))
+    if (cycle >= .74) continue
+    const age = cycle / .74
+    const place = .29 + x * .66
+    const yy = (heightAt(curve, place) + .043 + size * .07) * height
+    const radius = 1.5 + (5 + size * 12) * age
+    context.strokeStyle = rgba(color, amount * .37 * smooth(age * 8) * (1 - age) ** 1.8)
+    context.lineWidth = .8
+    context.beginPath()
+    context.ellipse(place * width, yy, radius, radius * (.20 + size * .045), -.08, 0, TWO_PI)
+    context.stroke()
+  }
+}
+
+function paintSnow(
+  context: CanvasRenderingContext2D, width: number, height: number, time: number,
+  amount: number, detail: number, color: Rgb,
+) {
+  const count = Math.round(Math.min(PARTICLES.length, 24 + width * .028) * detail)
+  for (let i = 0; i < count; i++) {
+    const { x, y, size, pace, phase } = PARTICLES[i]
+    const near = i % 6 === 0
+    const breeze = Math.sin(time * (.34 + pace * .22) + phase * TWO_PI) * (.021 + pace * .029)
+    const xx = wrap(x + breeze + time * (.003 + pace * .008)) * width
+    const yy = wrap(y + time * (near ? .034 + pace * .021 : .013 + pace * .015)) * (height + 22) - 11
+    const radius = near ? 1.35 + size ** 2 * 1.45 : .53 + size ** 2 * 1.0
+    const alpha = amount * (near ? .38 + size * .33 : .23 + size * .37)
+    if (near) glow(context, xx, yy, radius * 2.45, color, alpha * .35)
+    context.fillStyle = rgba(color, alpha)
+    context.beginPath()
+    context.arc(xx, yy, radius, 0, TWO_PI)
+    context.fill()
+  }
+}
+
+/** Paint one frame into the same canvas used by the glass's live refraction and color sampling. */
 export function createBackground(canvas: HTMLCanvasElement) {
-  const canvasContext = canvas.getContext('2d', { alpha: false });
-  if (!canvasContext) throw new Error('Unable to start the background canvas.');
-  const context = canvasContext;
-  let aspectRatio = 1;
+  const canvasContext = canvas.getContext('2d', { alpha: false })
+  if (!canvasContext) throw new Error('Unable to start the background canvas.')
+  const context = canvasContext
+  let width = 1, height = 1
+  let clouds: readonly HTMLCanvasElement[] | null = null
 
-  function resize(width: number, height: number, pixelRatio: number) {
-    aspectRatio = width / Math.max(1, height);
-    const pixelWidth = Math.max(1, Math.round(width * pixelRatio));
-    const pixelHeight = Math.max(1, Math.round(height * pixelRatio));
-    if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
-    if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
+  function resize(cssWidth: number, cssHeight: number, pixelRatio: number) {
+    width = Math.max(1, cssWidth)
+    height = Math.max(1, cssHeight)
+    const pixelWidth = Math.max(1, Math.round(width * pixelRatio))
+    const pixelHeight = Math.max(1, Math.round(height * pixelRatio))
+    if (canvas.width !== pixelWidth) canvas.width = pixelWidth
+    if (canvas.height !== pixelHeight) canvas.height = pixelHeight
   }
 
-  function render(time = 0, audio = SILENT) {
-    const narrow = Math.max(0, Math.min(1, (1.9 - aspectRatio) / 1.2));
-    const phase = time * 0.16;
-    const drift = Math.sin(phase) * 0.022 + audio.low * 0.011;
-    const lift = Math.sin(phase * 0.68 + 0.8) * 0.014 + audio.mid * 0.009;
+  function render({ time, phase, climate, audio, detail }: BackgroundFrame) {
+    const narrow = clamp((1.9 - width / height) / 1.2)
+    const t = phase * .178
+    const amplitude = climate.waveAmplitude * (1 + .29 * audio.low * audio.energy)
+    const fine = audio.mid * audio.energy
+    const glint = audio.high * audio.energy
+    const cobalt = bend([
+      [-.18, .96],
+      [.07, .87, .22 + narrow * .05, .36, .51, .36],
+      [.77, .35, .87, .38, 1.17, .06 + narrow * .2],
+    ], t, amplitude, .21, fine)
+    const current = bend([
+      [-.18, 1.05 - narrow * .11],
+      [.09, 1.03, .29 - narrow * .08, .42, .53, .49],
+      [.78, .56, .91, .63 - narrow * .07, 1.16, .20 + narrow * .05],
+    ], t, amplitude, .44, fine)
+    const fold = bend([
+      [-.18, 1.13 - narrow * .05],
+      [.12, 1.13, .33, .62, .55, .65],
+      [.79, .67, .87, .85, 1.17, .53],
+    ], t, amplitude, 1.16, fine * .7)
+    const undertow = bend([
+      [-.18, 1.19],
+      [.08, 1.18, .36, .89, .58, .85],
+      [.78, .81, .92, 1.08, 1.17, .91],
+    ], t, amplitude * .79, 1.64, fine * .5)
 
-    const cobalt: Curve = [
-      [-0.18, 0.96],
-      [0.07, 0.87, 0.22 + narrow * 0.05, 0.36 + lift, 0.51, 0.36 + drift],
-      [0.77, 0.35 + drift, 0.87, 0.38, 1.17, 0.06 + narrow * 0.2],
-    ];
-    const current: Curve = [
-      [-0.18, 1.05 - narrow * 0.11],
-      [0.09, 1.03, 0.29 - narrow * 0.08, 0.42 + lift, 0.53, 0.49 + drift],
-      [0.78, 0.56 + drift, 0.91, 0.63 - narrow * 0.07, 1.16, 0.20 + narrow * 0.05],
-    ];
-    const fold: Curve = [
-      [-0.18, 1.13 - narrow * 0.05],
-      [0.12, 1.13, 0.33, 0.62 + lift, 0.55, 0.65 + drift],
-      [0.79, 0.67 + drift, 0.87, 0.85, 1.17, 0.53],
-    ];
-    const undertow: Curve = [
-      [-0.18, 1.19],
-      [0.08, 1.18, 0.36, 0.89, 0.58, 0.85 + drift],
-      [0.78, 0.81 + drift, 0.92, 1.08, 1.17, 0.91],
-    ];
+    const palette = climate.palette
+    const [air, satin, accent] = palette.light
+    const shade: Rgb = [11, 22, 45]
+    const sunX = .33 + .032 * Math.sin(t * .47)
+    const sunY = .30 + .018 * Math.cos(t * .57)
+    const shineX = .60 + .083 * Math.sin(t * .74 + .32)
+    const sheen = .94 + .06 * Math.sin(t * 1.28)
+    const cloudX = .49 + .17 * Math.sin(time * .048 + 2.1)
 
-    context.setTransform(canvas.width, 0, 0, canvas.height, 0, 0);
-    context.fillStyle = gradient(context, 0.12, 0, 0.85, 1, [
-      [0, '#071226'],
-      [0.36, '#0a1e44'],
-      [0.7, '#0e3269'],
-      [1, '#155579'],
-    ]);
-    context.fillRect(0, 0, 1, 1);
-    glow(context, 0.63, 0.15, 0.58, 'rgba(19, 67, 141, 0.62)');
-    glow(context, 0.83, 0.47, 0.5, 'rgba(23, 134, 181, 0.28)');
+    context.setTransform(canvas.width, 0, 0, canvas.height, 0, 0)
+    context.fillStyle = gradient(context, [.12, 0, .85, 1], palette.sky, SKY)
+    context.fillRect(0, 0, 1, 1)
+    glow(context, .64 + Math.cos(t * .42) * .058, .194, .61, air, .30)
+    glow(context, .86, .46, .54, satin, .14)
+    glow(context, sunX, sunY, .33, accent, climate.sunlight * .53)
+    glow(context, sunX + .012, sunY + .023, .17, accent, climate.sunlight * .24)
+    if (climate.cloudCover > .035) {
+      clouds ??= [cloudStamp(23, .15), cloudStamp(71, .87)]
+      paintClouds(context, clouds, time, climate.cloudCover)
+    }
 
-    sheet(context, cobalt, -0.043, gradient(context, 0, 0.36, 1, 0.71, [
-      [0, '#0d214e'],
-      [0.33, '#184782'],
-      [0.64, '#153c81'],
-      [1, '#0d3255'],
-    ]));
-    sheet(context, cobalt, 0, gradient(context, 0.08, 0.32, 0.82, 0.86, [
-      [0, '#173d84'],
-      [0.25, '#2059c0'],
-      [0.52, '#297cce'],
-      [0.72, '#1c72ab'],
-      [1, '#0c375f'],
-    ]));
-    lightSheet(context, cobalt, 0, 0.62, 0.43 + drift, 0.43, 'rgba(64, 168, 255, 0.32)');
-    lightSheet(context, cobalt, 0, 0.92, 0.52, 0.4, 'rgba(2, 49, 121, 0.31)');
-    ribbon(context, cobalt, 0.004, 0.006, gradient(context, 0.18, 0.48, 1, 0.26, [
-      [0, 'transparent'],
-      [0.35, 'rgba(108, 189, 249, 0.50)'],
-      [0.72, 'rgba(117, 213, 244, 0.28)'],
-      [1, 'transparent'],
-    ]));
+    sheet(context, cobalt, -.043, gradient(context, [0, .36, 1, .71], palette.distant, FOUR))
+    sheet(context, cobalt, 0, gradient(context, [.08, .32, .82, .86], palette.cobalt, FIVE))
+    sheetGlow(context, cobalt, shineX, heightAt(cobalt, shineX) + .055, .41, air, .33 * sheen)
+    sheetGlow(context, cobalt, .89, .56, .39, shade, .21)
+    sheetGlow(context, cobalt, cloudX, heightAt(cobalt, cloudX) + .015, .33, shade, climate.cloudCover * .30)
+    sheetGlow(context, cobalt, sunX + .06, .47, .31, accent, climate.sunlight * .17)
+    ribbon(context, cobalt, .004, .006, gradient(context, [.18, .48, 1, .26], [air, satin, satin, air], FOUR, [0, .51, .29, 0]))
 
-    sheet(context, current, 0, gradient(context, 0.11, 0.71, 0.91, 0.53, [
-      [0, '#133b89'],
-      [0.27, '#288bca'],
-      [0.52, '#42becb'],
-      [0.74, '#1685ac'],
-      [1, '#135577'],
-    ]));
-    lightSheet(context, current, 0, 0.56, 0.55 + drift, 0.29, 'rgba(102, 246, 244, 0.28)');
-    ribbon(context, current, -0.011, 0.087, gradient(context, 0.04, 0.8, 0.98, 0.37, [
-      [0, 'rgba(87, 190, 239, 0)'],
-      [0.31, 'rgba(108, 206, 241, 0.22)'],
-      [0.61, 'rgba(126, 240, 220, 0.24)'],
-      [1, 'rgba(143, 221, 232, 0.08)'],
-    ]));
-    ribbon(context, current, 0.001, 0.027 + audio.energy * 0.004, gradient(context, 0.13, 0.7, 0.97, 0.48, [
-      [0, 'rgba(151, 220, 239, 0.08)'],
-      [0.29, 'rgba(181, 234, 238, 0.42)'],
-      [0.54, 'rgba(248, 242, 208, 0.90)'],
-      [0.73, 'rgba(211, 240, 222, 0.59)'],
-      [1, 'rgba(140, 216, 223, 0.13)'],
-    ]));
-    ribbon(context, current, 0.001, 0.0028 + audio.high * 0.001, gradient(context, 0.2, 0.6, 0.88, 0.5, [
-      [0, 'transparent'],
-      [0.5, 'rgba(255, 248, 217, 0.95)'],
-      [1, 'transparent'],
-    ]));
-    ribbon(context, current, 0.038, 0.0035, gradient(context, 0.25, 0.71, 0.89, 0.53, [
-      [0, 'transparent'],
-      [0.44, 'rgba(24, 118, 157, 0.59)'],
-      [1, 'transparent'],
-    ]));
+    sheet(context, current, 0, gradient(context, [.11, .71, .91, .53], palette.current, FIVE))
+    sheetGlow(context, current, shineX - .06, heightAt(current, shineX - .06) + .064, .32, satin, .25 * sheen + glint * .10)
+    sheetGlow(context, current, cloudX + .12, heightAt(current, cloudX + .12) + .081, .36, shade, climate.cloudCover * .34)
+    sheetGlow(context, current, sunX + .12, heightAt(current, sunX + .12) + .036, .24, accent, climate.sunlight * .20)
+    ribbon(context, current, -.011, .087, gradient(context, [.04, .8, .98, .37], [air, air, satin, satin], FOUR, [0, .23, .25, .08]))
+    ribbon(context, current, .001, .027 + .0019 * glint, gradient(context, [.13, .7, .97, .48], palette.foam, FIVE, [.08, .42, .90, .56, .13]))
+    const shimmer = glint > .002 ? bend(current, t * 1.5, glint * .08, 2.9, glint * .25) : current
+    ribbon(context, shimmer, .001, .0027 + glint * .0011, gradient(context,
+      [.21, .6, .88, .48], [accent, palette.foam[2], accent], [0, .5, 1], [0, .94, 0]))
+    ribbon(context, current, .038, .0035, gradient(context, [.25, .71, .89, .53], [air, shade, air], [0, .44, 1], [0, .28, 0]))
 
-    sheet(context, fold, -0.013, gradient(context, 0.12, 0.92, 0.9, 0.69, [
-      [0, '#164e91'],
-      [0.42, '#2b97b5'],
-      [0.69, '#20899d'],
-      [1, '#126580'],
-    ]));
-    sheet(context, fold, 0.008, gradient(context, 0.21, 0.58, 0.81, 1.04, [
-      [0, '#143e9e'],
-      [0.33, '#186096'],
-      [0.61, '#14577d'],
-      [1, '#0b3558'],
-    ]));
-    lightSheet(context, fold, 0.008, 0.61, 0.68 + drift, 0.50, 'rgba(39, 134, 205, 0.25)');
-    ribbon(context, fold, 0.008, 0.004, gradient(context, 0.26, 0.9, 1, 0.66, [
-      [0, 'transparent'],
-      [0.42, 'rgba(109, 210, 215, 0.63)'],
-      [1, 'transparent'],
-    ]));
+    sheet(context, fold, -.013, gradient(context, [.12, .92, .9, .69], palette.foldRim, FOUR))
+    sheet(context, fold, .008, gradient(context, [.21, .58, .81, 1.04], palette.fold, FOUR))
+    sheetGlow(context, fold, shineX + .025, heightAt(fold, shineX) + .055, .43, air, .22)
+    ribbon(context, fold, .008, .004, gradient(context, [.26, .9, 1, .66], [air, satin, air], [0, .42, 1], [0, .57, 0]))
 
-    sheet(context, undertow, 0, gradient(context, 0.12, 0.92, 1, 0.98, [
-      [0, '#0c275e'],
-      [0.4, '#103c76'],
-      [0.76, '#142c63'],
-      [1, '#0b244d'],
-    ]));
-    glow(context, 0.03, 0.28, 0.38, 'rgba(6, 17, 37, 0.61)');
-    glow(context, 0.97, 0.08, 0.33, 'rgba(5, 19, 40, 0.34)');
+    sheet(context, undertow, 0, gradient(context, [.12, .92, 1, .98], palette.undertow, FOUR))
+    glow(context, .03, .21, .37, [6, 14, 30], .63)
+    glow(context, .98, .025, .34, [5, 16, 35], .52)
+
+    context.setTransform(canvas.width / width, 0, 0, canvas.height / height, 0, 0)
+    if (climate.rainfall > .002) paintRain(context, current, width, height, time, climate.rainfall, detail, palette.foam[2])
+    if (climate.snowfall > .002) paintSnow(context, width, height, time, climate.snowfall, detail, palette.foam[2])
   }
 
-  return { canvas, resize, render };
+  return { canvas, resize, render }
 }
