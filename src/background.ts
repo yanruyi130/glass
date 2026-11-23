@@ -220,28 +220,58 @@ function paintClouds(
   context.restore()
 }
 
-const PARTICLES = Array.from({ length: 64 }, (_, index) => ({
-  x: hash(index, 1, 417), y: hash(index, 2, 417), size: hash(index, 3, 417),
-  pace: hash(index, 4, 417), phase: hash(index, 5, 417),
-}))
+function scatteredParticles(count: number, seed: number) {
+  return Array.from({ length: count }, (_, index) => ({
+    x: hash(index, 1, seed), y: hash(index, 2, seed), size: hash(index, 3, seed),
+    pace: hash(index, 4, seed), phase: hash(index, 5, seed),
+  }))
+}
+
+const PARTICLES = scatteredParticles(64, 417)
+const RAIN_STROKE_BANDS = 4
+const RAIN_LAYERS = [
+  {
+    particles: scatteredParticles(144, 611), minimum: 42, areaPerStreak: 6700,
+    length: [7, 17], speed: [105, 235], width: [.48, .72], opacity: [.105, .205], slope: .16,
+  },
+  {
+    particles: scatteredParticles(45, 977), minimum: 14, areaPerStreak: 21800,
+    length: [13, 29], speed: [185, 380], width: [.82, 1.18], opacity: [.24, .39], slope: .21,
+  },
+] as const
 
 function paintRain(
   context: CanvasRenderingContext2D, curve: Curve, width: number, height: number,
   time: number, amount: number, detail: number, color: Rgb,
 ) {
-  const count = Math.round(Math.min(42, 17 + width * .021) * detail)
-  for (let i = 0; i < count; i++) {
-    const { x, y, size, pace } = PARTICLES[i]
-    const xx = wrap(x - time * (.027 + pace * .014)) * width
-    const yy = wrap(y + time * (.19 + pace * .25)) * (height + 30) - 15
-    const length = 6 + size * 11
-    context.lineWidth = .56 + size * .34
-    context.strokeStyle = rgba(color, amount * (.057 + size * .107))
-    context.beginPath()
-    context.moveTo(xx, yy)
-    context.lineTo(xx - length * .29, yy + length)
-    context.stroke()
+  // Streaks complete their fall outside the viewport before re-entering at the opposite edge.
+  const margin = 36
+  const spanX = width + margin * 2
+  const spanY = height + margin * 2
+  context.save()
+  context.lineCap = 'round'
+  for (const layer of RAIN_LAYERS) {
+    const count = Math.round(clamp(width * height / layer.areaPerStreak, layer.minimum, layer.particles.length) * detail)
+    // Batch similar strokes to keep the denser rain cheap to draw.
+    for (let band = 0; band < RAIN_STROKE_BANDS; band++) {
+      const style = band / (RAIN_STROKE_BANDS - 1)
+      context.lineWidth = mix(layer.width[0], layer.width[1], style)
+      context.strokeStyle = rgba(color, amount * mix(layer.opacity[0], layer.opacity[1], style))
+      context.beginPath()
+      for (let index = band; index < count; index += RAIN_STROKE_BANDS) {
+        const { x, y, size, pace, phase } = layer.particles[index]
+        const slope = layer.slope + (phase - .5) * .10
+        const distance = time * mix(layer.speed[0], layer.speed[1], pace)
+        const xx = wrap(x - distance * slope / spanX) * spanX - margin
+        const yy = wrap(y + distance / spanY) * spanY - margin
+        const length = mix(layer.length[0], layer.length[1], size)
+        context.moveTo(xx, yy)
+        context.lineTo(xx - length * slope, yy + length)
+      }
+      context.stroke()
+    }
   }
+  context.restore()
 
   for (let i = 0; i < Math.round(8 * detail); i++) {
     const { x, size, pace, phase } = PARTICLES[i + 48]
