@@ -33,7 +33,7 @@ const layouts: Record<ShapeId, PlayerLayout> = {
   cassette: {
     mark: region(.073, .115, .045, .10),
     trackText: region(.14, .074, .54, .16),
-    library: region(.729, .10, .145, .135),
+    library: region(.8175, .04, .125, .15),
     reels: [cassetteReel(.324), cassetteReel(.676)],
     tapePath: region(.17, .235, .66, .455),
     progress: region(.14, .704, .72, .047),
