@@ -1,6 +1,8 @@
 import type { AudioInput } from './background'
 
 const bands = ['low', 'mid', 'high', 'energy'] as const
+const rise = { low: .155, mid: .115, high: .18, energy: .17 }
+const fall = { low: .85, mid: .59, high: .7, energy: .94 }
 const silence: AudioInput = Object.freeze({ low: 0, mid: 0, high: 0, energy: 0 })
 let source = silence
 
@@ -20,7 +22,7 @@ export function createMusicEnvelope() {
   return (seconds: number, input = source): AudioInput => {
     for (const name of bands) {
       const target = normalize(input[name])
-      const response = target > output[name] ? .26 : 1.05
+      const response = target > output[name] ? rise[name] : fall[name]
       output[name] += (target - output[name]) * -Math.expm1(-seconds / response)
       if (Math.abs(output[name] - target) < .0005) output[name] = target
     }

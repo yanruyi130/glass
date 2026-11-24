@@ -9,13 +9,10 @@ export const TURNTABLE = {
   arm: { x: 83, y: 23, length: 43, parkAngle: 3, grooveAngle: 39 },
   controls: {
     mark: slot(.29, .33, .17, .18),
-    trackText: slot(.105, .789, .63, .103),
+    trackText: slot(.105, .789, .51, .103),
+    library: slot(.655, .792, .102, .104),
     progress: slot(.105, .905, .63, .042),
     transport: slot(.782, .797, .12, .12),
-  },
-  preview: {
-    readout: slot(.105, .801, .33, .106),
-    button: slot(.50, .802, .395, .106),
   },
   surfaceClearance: [
     slot(.776, .185, .103, .163),

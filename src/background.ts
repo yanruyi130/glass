@@ -85,7 +85,8 @@ function bend(curve: Curve, phase: number, amplitude: number, offset: number, de
   const y = (x: number, height: number) => height + amplitude * (
     Math.sin(x * 4.8 + phase + offset) * .017
       + Math.sin(x * 8.7 - phase * .76 + offset * 1.35) * .011
-      + Math.sin(x * 13 + phase * 1.51 + offset) * (.002 + detail * .006)
+      + Math.sin(x * 5.9 + phase * .82 - offset) * detail * .016
+      + Math.sin(x * 13 + phase * 1.51 + offset) * (.002 + detail * .015)
   )
   const move = ([x1, y1, x2, y2, x3, y3]: Cubic): Cubic => [x1, y(x1, y1), x2, y(x2, y2), x3, y(x3, y3)]
   return [[curve[0][0], y(...curve[0])], move(curve[1]), move(curve[2])]
@@ -314,10 +315,10 @@ export function createBackground(canvas: HTMLCanvasElement) {
     const daylight = climate.sunlight
     const narrow = clamp((1.9 - width / height) / 1.2)
     const t = phase * .178
-    const amplitude = climate.waveAmplitude * (1 + .29 * audio.low * audio.energy)
-
-    const fine = audio.mid * audio.energy
-    const glint = audio.high * audio.energy
+    const drive = Math.sqrt(clamp(audio.energy))
+    const amplitude = climate.waveAmplitude * (1 + .22 * audio.low * drive)
+    const fine = audio.mid * drive
+    const glint = audio.high * drive
     const cobalt = bend([
       [-.18, .96],
       [.07, .87, .22 + narrow * .05, .36 + daylight * .115, .51, .36 + daylight * .095],
@@ -375,15 +376,15 @@ export function createBackground(canvas: HTMLCanvasElement) {
     ribbon(context, cobalt, .004, .006, gradient(context, [.18, .48, 1, .26], [air, satin, satin, air], FOUR, [0, .51, .29, 0]))
 
     sheet(context, current, 0, gradient(context, [.11, .71, .91, .53], palette.current, FIVE))
-    sheetGlow(context, current, shineX - .06, heightAt(current, shineX - .06) + .064, .32, satin, .25 * sheen + glint * .10)
+    sheetGlow(context, current, shineX - .06, heightAt(current, shineX - .06) + .064, .32, satin, .25 * sheen + glint * .072)
     sheetGlow(context, current, cloudX + .12, heightAt(current, cloudX + .12) + .081, .36, shade, climate.cloudCover * .34)
     sheetGlow(context, current, sunX - .025, heightAt(current, sunX - .025) + .045, .25, accent, daylight * .14)
-    ribbon(context, current, -.011, .087, gradient(context, [.04, .8, .98, .37], [air, air, satin, satin], FOUR, [0, .23, .25, .08]))
-    ribbon(context, current, .001, .027 + .0019 * glint, gradient(context, [.13, .7, .97, .48], palette.foam, FIVE, [.08, .42, .90, .56, .13]))
+    ribbon(context, current, -.011, .087 + .018 * fine, gradient(context, [.04, .8, .98, .37], [air, air, satin, satin], FOUR, [0, .23, .25, .08]))
+    ribbon(context, current, .001, .027 + .007 * fine + .0019 * glint, gradient(context, [.13, .7, .97, .48], palette.foam, FIVE, [.08, .42, .90, .56, .13]))
     const shimmer = glint > .002 ? bend(current, t * 1.5, glint * .08, 2.9, glint * .25) : current
     ribbon(context, shimmer, .001, .0027 + glint * .0011, gradient(context,
       [.21, .6, .88, .48], [accent, palette.foam[2], accent], [0, .5, 1], [0, .94, 0]))
-    ribbon(context, current, .038, .0035, gradient(context, [.25, .71, .89, .53], [air, shade, air], [0, .44, 1], [0, .28, 0]))
+    ribbon(context, current, .038 + .008 * fine, .0035, gradient(context, [.25, .71, .89, .53], [air, shade, air], [0, .44, 1], [0, .28, 0]))
 
     sheet(context, fold, -.013, gradient(context, [.12, .92, .9, .69], palette.foldRim, FOUR))
     sheet(context, fold, .008, gradient(context, [.21, .58, .81, 1.04], palette.fold, FOUR))

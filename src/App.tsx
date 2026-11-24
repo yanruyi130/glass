@@ -70,7 +70,6 @@ export function App() {
   const playing = playback ?? !reducedMotion
   const soundscape = useSoundscape(weather)
   const [turntableMotion] = useState(() => createTurntableMotion({ rpm: TURNTABLE.record.rpm }))
-  const [turntablePreview, setTurntablePreview] = useState(false)
 
   function setView(value: boolean) {
     setExpanded(value)
@@ -119,8 +118,7 @@ export function App() {
         weather={weather} rainAmount={rainAmount} slideSpeed={slideSpeed} frostCoverage={frostCoverage / 100}
         musicBands={soundscape.bands} musicPlaying={soundscape.playing}
         renderPlayer={appearance => appearance === 'turntable'
-          ? <TurntableDeck player={soundscape} motion={turntableMotion}
-              previewing={turntablePreview} onTogglePreview={() => setTurntablePreview(value => !value)} reducedMotion={reducedMotion} />
+          ? <TurntableDeck player={soundscape} motion={turntableMotion} reducedMotion={reducedMotion} />
           : <PlayerControls appearance={appearance} player={soundscape} />}
         onSelect={selectLayer} onExpanded={setView} onEffective={setEffective} onInk={setInk}
       />

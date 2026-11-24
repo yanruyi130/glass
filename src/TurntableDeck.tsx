@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useRef, type CSSProperties } from 'react'
+import { useId, useLayoutEffect, useRef } from 'react'
 import { PlayerControls } from './PlayerControls'
 import type { useSoundscape } from './audio'
 import { parkedTonearmTip, TURNTABLE } from './turntableLayout'
@@ -9,19 +9,13 @@ type Motion = ReturnType<typeof createTurntableMotion>
 
 interface Props {
   player: ReturnType<typeof useSoundscape>
-  previewing: boolean
-  onTogglePreview: () => void
   reducedMotion: boolean
   motion: Motion
   artworkUrl?: string
 }
 
-const { arm, record, preview, body } = TURNTABLE
+const { arm, record, body } = TURNTABLE
 const grooveRadii = Array.from({ length: 38 }, (_, index) => 10.1 + index * .475)
-
-function slotStyle({ x, y, width, height }: typeof preview.readout): CSSProperties {
-  return { left: x * 100 + '%', top: y * 100 + '%', width: width * 100 + '%', height: height * 100 + '%' }
-}
 
 function TurntableArt({ motion, active, reducedMotion, artworkUrl }: {
   motion: Motion; active: boolean; reducedMotion: boolean; artworkUrl?: string
@@ -124,25 +118,9 @@ function TurntableArt({ motion, active, reducedMotion, artworkUrl }: {
   </svg>
 }
 
-export function TurntableDeck({ player, previewing, onTogglePreview, reducedMotion, motion, artworkUrl }: Props) {
-  const hasTrack = player.current !== null
-  const active = hasTrack ? player.playing : previewing
-
+export function TurntableDeck({ player, reducedMotion, motion, artworkUrl }: Props) {
   return <div className="turntable-deck">
-    <TurntableArt motion={motion} active={active} reducedMotion={reducedMotion} artworkUrl={artworkUrl} />
-    {hasTrack ? <PlayerControls appearance="turntable" player={player} /> :
-      <div className="turntable-preview" role="group" aria-label="唱片机">
-        <div className="turntable-preview__readout" style={slotStyle(preview.readout)}>
-          <span>唱片机</span>
-          <span className="turntable-preview__status" role="status">{previewing ? '无声预览中' : '无声动效'}</span>
-        </div>
-        <button className="turntable-preview__button" type="button" style={slotStyle(preview.button)}
-          onClick={onTogglePreview}>
-          <svg viewBox="0 0 16 16" aria-hidden="true">
-            {previewing ? <rect x="4.4" y="4.4" width="7.2" height="7.2" rx="1.25" /> : <path d="M5 3.7v8.6L12 8Z" />}
-          </svg>
-          {previewing ? '停止预览' : '播放动效预览'}
-        </button>
-      </div>}
+    <TurntableArt motion={motion} active={player.playing} reducedMotion={reducedMotion} artworkUrl={artworkUrl} />
+    <PlayerControls appearance="turntable" player={player} />
   </div>
 }

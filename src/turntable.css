@@ -1,6 +1,5 @@
 .turntable-deck,
-.turntable-art,
-.turntable-preview {
+.turntable-art {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -31,43 +30,4 @@
 .turntable-needle { stroke: #e6eff0; stroke-width: .4; stroke-linecap: round; }
 .turntable-control-divider { stroke: currentColor; stroke-opacity: .24; stroke-width: .24; }
 
-.turntable-preview__readout,
-.turntable-preview__button { position: absolute; }
-.turntable-preview__readout {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 2px;
-  white-space: nowrap;
-  font-size: clamp(11px, 3vw, 15px);
-  font-weight: 660;
-  line-height: 1.08;
-}
-.turntable-preview__status {
-  color: var(--player-quiet);
-  font-size: clamp(9px, 2vw, 11px);
-  font-weight: 475;
-}
-.turntable-preview__button {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: .36em;
-  padding: 0 .35em;
-  border: 1px solid color-mix(in srgb, currentColor 36%, transparent);
-  border-radius: 100vmax;
-  color: inherit;
-  background: linear-gradient(155deg, #f8fcff43, #e7f3fe20);
-  box-shadow: inset 0 .5px .5px #feffff55, 0 2px 5px #10273a22;
-  font-size: clamp(10px, 2.7vw, 13px);
-  font-weight: 630;
-  white-space: nowrap;
-  cursor: pointer;
-  pointer-events: auto;
-  touch-action: manipulation;
-}
-.turntable-preview__button::after { position: absolute; inset: -6px -3px; content: ''; }
-.turntable-preview__button:hover { background-color: #f1fbff32; }
-.turntable-preview__button:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
-.turntable-preview__button svg { flex: none; width: 1em; height: 1em; fill: currentColor; }
 .deck-controls--turntable .deck-controls__key { border-radius: 50%; }

@@ -12,6 +12,8 @@ interface Props {
 type Slot = { x: number; y: number; width: number; height: number }
 
 const importOption = '__import_local__'
+const restoreOption = '__restore_builtin__'
+const removeOption = '__remove_local__'
 
 function slotStyle({ x, y, width, height }: Slot): CSSProperties {
   return { left: x * 100 + '%', top: y * 100 + '%', width: width * 100 + '%', height: height * 100 + '%' }
@@ -31,14 +33,15 @@ export function PlayerControls({ appearance, player }: Props) {
   const { mark, trackText, transport, progress, volume, library } = playerLayout(appearance)
   const card = appearance === 'rounded-rectangle'
   const fileInput = useRef<HTMLInputElement>(null)
-  const selectedTrack = player.current?.source === 'local' ? player.current.id : ''
-  const playable = player.current !== null && !player.loading
+  const selectedTrack = player.current.id
+  const localTrack = player.current.source === 'local'
+  const playable = !player.loading
   const seekable = playable && player.duration > 0
   const time = formatTime(player.progress)
   const duration = formatTime(player.duration)
   const remaining = formatTime(player.duration - player.progress)
-  const playLabel = player.playing ? '暂停音乐' : '播放音乐'
-  const status = player.playing ? '播放中' : player.progress > 0 ? '已暂停' : '待播放'
+  const playLabel = player.requested ? '暂停音乐' : '播放音乐'
+  const status = player.playing ? '播放中' : player.requested ? '加载中' : player.progress > 0 ? '已暂停' : '待播放'
   const volumePercent = Math.round(player.musicVolume * 100)
 
   return <div
@@ -83,10 +86,10 @@ export function PlayerControls({ appearance, player }: Props) {
         </svg>
       </button>}
       <button className="deck-controls__key" type="button"
-        aria-label={playLabel} title={playLabel} disabled={!playable} data-playing={player.playing}
+        aria-label={playLabel} title={playLabel} disabled={!playable} data-playing={player.requested}
         onClick={player.togglePlay}>
         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          {player.playing
+          {player.requested
             ? <path d="M9 6.5v11m6-11v11" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
             : <path d="M9 6.2a.6.6 0 0 0-1 .5v10.6a.6.6 0 0 0 1 .5l8.5-5.3a.6.6 0 0 0 0-1Z" fill="currentColor" />}
         </svg>
@@ -113,19 +116,29 @@ export function PlayerControls({ appearance, player }: Props) {
           <path d="M3.5 7.5V16a2 2 0 0 0 2 2H18a2 2 0 0 0 2-2V8.5a2 2 0 0 0-2-2h-6l-2-2h-4.5a2 2 0 0 0-2 2Z" />
           <path d="M11.75 10v5m-2.5-2.5h5" />
         </svg>
-        <select aria-label="选择本地音乐" title="选择或导入本地音乐" value={selectedTrack}
+        <select aria-label="曲库与天气分配" title="导入、分配或移除本地音乐" value={selectedTrack} disabled={player.loading}
           onChange={event => {
             const value = event.currentTarget.value
             if (value === importOption) {
               event.currentTarget.value = selectedTrack
               fileInput.current?.click()
+            } else if (value === restoreOption || value === removeOption) {
+              event.currentTarget.value = selectedTrack
+              if (value === restoreOption) player.restoreBuiltIn()
+              else player.removeCurrent()
             } else if (value) {
               player.select(value)
             }
           }}>
-          <option value="" disabled>选择本地音乐</option>
+          {!localTrack && <option value={selectedTrack}>{player.current.title}（内置）</option>}
           <option value={importOption}>导入本地音频…</option>
-          {player.tracks.map(track => <option key={track.id} value={track.id}>{track.title}</option>)}
+          {player.tracks.length > 0 && <optgroup label="将曲目分配给当前天气">
+            {player.tracks.map(track => <option key={track.id} value={track.id}>{track.title}</option>)}
+          </optgroup>}
+          {localTrack && <optgroup label="管理当前曲目">
+            <option value={restoreOption}>恢复当前天气内置曲目</option>
+            <option value={removeOption}>从本地曲库移除当前曲目</option>
+          </optgroup>}
         </select>
       </div>
       <input ref={fileInput} hidden type="file" aria-label="导入本地音频" multiple
