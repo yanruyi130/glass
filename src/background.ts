@@ -243,7 +243,7 @@ export function createBackground(canvas: HTMLCanvasElement) {
       paintClouds(context, clouds, cloudTime, cloudDriftTime, climate.cloudCover)
     }
 
-    liquid.render(context, width, height, detail, phase, climate, audio, cloudX)
+    liquid.render(context, width, height, detail, phase, climate, audio, cloudX, undefined, time)
     glow(context, .03, .21, .37, [6, 14, 30], .63 * (1 - daylight))
     glow(context, .98, .025, .34, [5, 16, 35], .52 * (1 - daylight))
 

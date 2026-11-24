@@ -1,6 +1,6 @@
 import {
   BufferAttribute, BufferGeometry, CanvasTexture, Color, DoubleSide, DynamicDrawUsage, LinearFilter,
-  Mesh, PerspectiveCamera, Scene, ShaderMaterial, SRGBColorSpace, Vector2, WebGLRenderer,
+  Mesh, PerspectiveCamera, Scene, ShaderMaterial, SRGBColorSpace, Vector2, Vector3, Vector4, WebGLRenderer,
 } from 'three'
 import type { AudioInput } from './background'
 import type { Climate, Rgb } from './climate'
@@ -9,10 +9,24 @@ import { clamp, mix } from './material'
 const ACROSS = 144
 const ALONG = 76
 const ROW = ACROSS + 1
-const ADVANCE = .92
+
+const FILM = {
+  travel: .83,
+  period: 8.4,
+  relief: 1.16,
+  musicResponse: 0,
+  transmission: .64,
+  refraction: .058,
+  softness: .019,
+  reflection: .48,
+  rimLight: .44,
+  focusDepth: 9.0,
+  focusRange: 5.0,
+  raster: { width: 860, height: 520 },
+} as const
 
 export function getLiquidMotion(audio: AudioInput) {
-  const energy = Math.sqrt(clamp(audio.energy))
+  const energy = Math.sqrt(clamp(audio.energy)) * FILM.musicResponse
   const swell = clamp(audio.low) * energy
   const bend = clamp(audio.mid) * energy
   const shimmer = Math.sqrt(clamp(audio.high)) * energy
@@ -42,6 +56,8 @@ const FRAGMENT = `
   uniform vec3 uShade, uBody, uFill, uGlint;
   uniform float uSun, uShimmer, uCloud, uCloudX;
   uniform vec2 uFrame;
+  uniform vec3 uOptics;
+  uniform vec4 uLight;
   uniform sampler2D uEnvironment;
   varying vec3 vSurface;
   varying vec3 vNormal;
@@ -70,26 +86,38 @@ const FRAGMENT = `
     vec2 uv = gl_FragCoord.xy / uFrame;
     float cloudX = uv.x - uCloudX;
     float cloud = uCloud / (1.0 + 12.0 * cloudX * cloudX);
-    float tone = clamp(0.10 + diffuse * 0.56 + facing * 0.14 - vCavity * 0.39 - cloud * 0.095, 0.0, 1.0);
-    vec3 base = mix(uShade, uBody, tone) * (0.73 + 0.27 * diffuse - 0.10 * vCavity);
+    float distanceFromFocus = (length(cameraPosition - vSurface) - uLight.z) / uLight.w;
+    float focus = 1.0 / (1.0 + distanceFromFocus * distanceFromFocus);
+    float foldedDepth = 1.0 - smoothstep(-1.12, 0.89, vSurface.y);
+    float shadow = vCavity * mix(0.46, 0.65, focus);
+    float tone = clamp(0.12 + diffuse * 0.58 + facing * 0.12 - shadow - cloud * 0.095 - 0.29 * foldedDepth, 0.0, 1.0);
+    vec3 base = mix(uShade, uBody, tone) * (0.64 + 0.36 * diffuse - 0.26 * foldedDepth - 0.11 * vCavity);
 
     // A broad studio reflection and a small grazing reflection use the same
     // normal as the diffuse light. Neither is attached to a mesh boundary.
-    float broad = pow(gloss, 5.0);
-    float core = pow(gloss, 23.0);
-    float rim = pow(1.0 - facing, 3.1);
+    float broad = pow(gloss, mix(3.5, 8.0, focus));
+    float core = pow(gloss, mix(9.0, 31.0, focus));
+    float fresnel = pow(1.0 - facing, 4.5);
     vec3 viewNormal = normalize(vViewNormal) * face;
-    float density = smoothstep(-5.5, 3.6, vSurface.z) * 0.34 + vCavity * 0.46;
+    float density = 0.31 * vCavity + 0.32 * smoothstep(-4.4, 4.8, vSurface.z) + 0.34 * foldedDepth;
     vec2 units = vec2(uFrame.y / uFrame.x, 1.0);
-    vec2 shift = viewNormal.xy * (0.047 + (1.0 - facing) * 0.031);
-    vec3 environment = readEnvironment(uv + shift * units, (0.013 + density * 0.020) * units);
-    vec3 transmission = mix(environment * mix(uBody, vec3(1.0), 0.66), uFill, 0.12);
-    base = mix(base, transmission, (0.23 + facing * 0.39) * (1.0 - density * 0.74));
-    float reflectedSky = max(0.0, dot(reflected, normalize(vec3(0.31, 0.31, -0.90))));
-    float skyReflection = (0.19 * pow(reflectedSky, 9.0) + 0.34 * pow(reflectedSky, 29.0)) * (0.24 + 0.76 * rim);
-    base = mix(base, uFill, 0.29 * broad + 0.044 * rim);
-    float specular = clamp(0.29 * core + (1.0 + uShimmer * 0.14) * skyReflection, 0.0, 0.48);
-    gl_FragColor = vec4(mix(base, uGlint, specular), 1.0);
+    vec2 shift = viewNormal.xy * uOptics.y * (1.0 + (1.0 - facing) * 0.55);
+    float blur = uOptics.z * (0.68 + 0.84 * (1.0 - focus) + density * 0.90);
+    vec3 environment = readEnvironment(uv + shift * units, blur * units);
+    vec3 transmission = mix(environment * mix(uBody, vec3(1.0), 0.57), uFill, 0.09) * (1.0 - foldedDepth * 0.26);
+    base = mix(base, transmission, uOptics.x * (0.39 + facing * 0.56) * (1.0 - density * 0.81));
+
+    float reflectedSky = max(0.0, dot(reflected, normalize(vec3(0.19, 0.29, -0.94))));
+    float skyReflection = 0.30 * pow(reflectedSky, 7.0) + 0.38 * pow(reflectedSky, mix(15.0, 36.0, focus));
+    float rim = pow(fresnel, 2.65) * (0.21 + 0.79 * smoothstep(0.30, 0.94, reflectedSky));
+    base = mix(base, uFill, 0.23 * broad + 0.035 * fresnel);
+    float specular = clamp(uLight.x * (0.45 * core + skyReflection * (0.51 + 0.09 * uShimmer))
+      + uLight.y * rim * (0.54 + 0.46 * focus), 0.0, 0.64);
+    vec2 reflectionUV = vec2(0.53 + reflected.x * 0.31, 0.66 + reflected.y * 0.23);
+    vec3 reflectedEnvironment = (texture2D(uEnvironment, reflectionUV + vec2(0.06, 0.04)).rgb
+      + texture2D(uEnvironment, reflectionUV - vec2(0.06, 0.04)).rgb) * 0.5;
+    vec3 glint = mix(uGlint, reflectedEnvironment, 0.14 * broad);
+    gl_FragColor = vec4(mix(base, glint, specular), 1.0);
     #include <colorspace_fragment>
   }
 `
@@ -120,39 +148,52 @@ function makeSurfaceGeometry() {
 
 const sections = Array.from({ length: ALONG + 1 }, (_, row) => {
   const depth = row / ALONG
-  return { depth, z: mix(-9.7, 7.4, depth), returnCurve: Math.exp(-18 * depth), outer: (1 - depth) ** 3 }
+  const curl = (depth - .29) * 5.8
+  return {
+    depth, z: mix(-10, 8.1, depth), curl: 1 / (1 + curl * curl),
+    returnCurve: Math.exp(-17.2 * depth), outer: (1 - depth) ** 3,
+    foreground: depth * depth * (3 - 2 * depth),
+  }
 })
 
 function deform(
-  surface: ReturnType<typeof makeSurfaceGeometry>, width: number, phase: number, amplitude: number, motion: Motion,
+  surface: ReturnType<typeof makeSurfaceGeometry>, width: number, phase: number, time: number,
+  amplitude: number, motion: Motion,
 ) {
   const { geometry, positions, cavities } = surface
   const span = width * 2
-  const drive = amplitude * (1 + .72 * motion.swell)
-  const offset = phase * ADVANCE
-  const flex = .70 + .64 * motion.bend
-  const drift = phase * .091
+  const drive = FILM.relief * amplitude * (1 + .66 * motion.swell)
+  const offset = phase * FILM.travel
+  const cycle = time * (2 * Math.PI / FILM.period)
+  const flex = .76 + .61 * motion.bend
   for (let col = 0; col < ROW; col++) {
     const x = -width + span * col / ACROSS
     const advected = x - offset
-    const sweep = Math.sin(advected * .31 + drift)
-    const turn = Math.cos(advected * .48 - drift * .64 + .7)
-    for (const [row, { depth, z: base, returnCurve, outer }] of sections.entries()) {
-      // One continuous map from lattice coordinates to world space. The
-      // far boundary curls beneath the rising surface in world Y and Z.
-      const z = base + 1.65 * returnCurve + outer * (1.21 * sweep + .52 * turn)
-      const u = advected + flex * (.94 * Math.sin(.29 * z + sweep) + .78 * Math.sin(.51 * z - .33 * advected - drift))
-      const v = z + .82 * Math.sin(.34 * u - .25 * z + drift)
-      const crest = -3.85 + 2.52 * Math.sin(.22 * u + .92 + drift * .72)
-      const acrossCrest = (v - crest) / (2.06 + .48 * turn)
-      const ridge = Math.exp(-acrossCrest * acrossCrest)
-      const crestLift = 1.12 + .85 * Math.cos(.26 * u + .65 - drift * .46)
-      const basin = .64 * Math.sin(.39 * u + .37 * v + 2.1) + .43 * Math.cos(.41 * v - .41 * u + 1.08)
-      const shoulder = Math.cos(.71 * u + .23 * z + 2.73 + .41 * sweep)
-      const nearWeight = depth * depth * (3 - 2 * depth)
-      const acrossBasin = (v - 3.08 - .93 * sweep) / 3.24
-      const front = (1.46 * Math.exp(-acrossBasin * acrossBasin) * shoulder + .46 * basin) * nearWeight
-      const y = -.44 + drive * (ridge * crestLift + basin * .60 + front) - 1.28 * returnCurve
+    const sweep = .31 * advected + 1.18
+    const bend = Math.sin(sweep + .27 * Math.sin(.58 * sweep - .7))
+    const shoulder = Math.cos(.68 * sweep + .86)
+    for (const [row, { depth, z: base, curl, returnCurve, outer, foreground }] of sections.entries()) {
+      // Distance along the sheet shifts the flex phase. Adjacent sections
+      // continue into each other as the raised edge rolls toward the viewer.
+      const flexing = Math.sin(cycle - .23 * advected + depth * 1.48)
+      const roll = flex * (1.12 * bend + .55 * flexing) * curl
+      const z = base + 1.74 * returnCurve + outer * (1.20 * bend + .63 * shoulder) + roll
+      const u = advected + flex * (.91 * Math.sin(.31 * z + .72 * bend) + .48 * flexing * curl)
+      const v = z + .78 * Math.sin(.28 * u - .25 * z + .34)
+      const axis = -2.12 + 3.27 * Math.sin(.259 * u - .52) + .56 * flexing
+      const crest = (v - axis) / (2.24 + .40 * shoulder + .38 * flexing)
+      const incline = .82 * Math.sin(.248 * u - .51) + .18 * Math.sin(.512 * u + .14)
+      const height = 1.42 + 1.30 * incline + .33 * flexing
+      const ridge = Math.exp(-crest * crest) * height
+      const trough = (v - axis - 4.45) / 2.48
+      const hollow = Math.exp(-trough * trough) * (.43 - .19 * Math.sin(.40 * u - .36 * v))
+      const basin = .62 * Math.cos(.47 * u + .34 * v + 2.71) + .30 * Math.sin(.42 * v - .36 * u)
+      const acrossBasin = (v - 3.12 - 1.18 * bend) / 3.22
+      const front = basin * (.48 + 1.57 * Math.exp(-acrossBasin * acrossBasin)) * foreground
+      // Low-contrast, continuous irregularity in the domain. It travels with
+      // the film and keeps broadened reflections from forming regular bands.
+      const ripple = .043 * Math.sin(.86 * u + .63 * v) * Math.sin(.75 * v - .18 * u + .25 * flexing)
+      const y = -.37 + drive * (ridge - hollow + front + ripple - .86 * (1 - incline) * outer) - 1.13 * returnCurve
       positions.setXYZ(row * ROW + col, x, y, z)
     }
   }
@@ -202,6 +243,8 @@ export function createLiquidSurface() {
     uSun: { value: 0 }, uShimmer: { value: 0 },
     uCloud: { value: 0 }, uCloudX: { value: .5 },
     uFrame: { value: new Vector2() }, uEnvironment: { value: environmentTexture },
+    uOptics: { value: new Vector3(FILM.transmission, FILM.refraction, FILM.softness) },
+    uLight: { value: new Vector4(FILM.reflection, FILM.rimLight, FILM.focusDepth, FILM.focusRange) },
   }
   const material = new ShaderMaterial({
     vertexShader: VERTEX, fragmentShader: FRAGMENT, uniforms, side: DoubleSide, forceSinglePass: true,
@@ -213,10 +256,10 @@ export function createLiquidSurface() {
 
   function render(
     target: CanvasRenderingContext2D, width: number, height: number, detail: number,
-    phase: number, climate: Climate, audio: AudioInput, cloudX: number, inspection?: Inspection,
+    phase: number, climate: Climate, audio: AudioInput, cloudX: number, inspection?: Inspection, time = phase,
   ) {
     if (!renderer || context?.isContextLost()) return
-    const scale = Math.min(.92, 815 * detail / width, 505 * detail / height)
+    const scale = Math.min(.96, FILM.raster.width * detail / width, FILM.raster.height * detail / height)
     const frameWidth = Math.max(2, Math.round(width * scale))
     const frameHeight = Math.max(2, Math.round(height * scale))
     if (canvas.width !== frameWidth || canvas.height !== frameHeight) renderer.setSize(frameWidth, frameHeight, false)
@@ -229,14 +272,14 @@ export function createLiquidSurface() {
       camera.lookAt(0, .35, -.9)
     } else {
       camera.fov = 42 + 9 * narrow
-      camera.position.set(0, 3.08 + .34 * narrow, 8.35 + .87 * narrow)
-      camera.lookAt(0, .53, -.49)
+      camera.position.set(.33, 3.03 + .31 * narrow, 8.35 + .87 * narrow)
+      camera.lookAt(0, .54, -.49)
     }
     camera.updateProjectionMatrix()
     if (import.meta.env.DEV) material.wireframe = inspection === 'wireframe'
 
     const motion = getLiquidMotion(audio)
-    deform(surface, Math.max(8.8, 9.1 * aspect), phase, climate.waveAmplitude, motion)
+    deform(surface, Math.max(8.8, 9.5 * aspect), phase, time, climate.waveAmplitude, motion)
     const { palette } = climate
     useColor(uniforms.uShade.value, palette.undertow[0])
     useColor(uniforms.uBody.value, palette.current[1])
