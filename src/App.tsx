@@ -2,6 +2,9 @@ import { useState, useSyncExternalStore } from 'react'
 import { GlassStage, type BackgroundTheme } from './GlassStage'
 import { MaterialPanel } from './MaterialPanel'
 import { PlayerControls } from './PlayerControls'
+import { TurntableDeck } from './TurntableDeck'
+import { TURNTABLE } from './turntableLayout'
+import { createTurntableMotion } from './turntableMotion'
 import { useSoundscape } from './audio'
 import { usePreference } from './preferences'
 import { DEFAULT_WEATHER, WEATHER_PRESETS, type WeatherId } from './climate'
@@ -66,6 +69,8 @@ export function App() {
   const [frostCoverage, setFrostCoverage] = useState(loadFrostCoverage)
   const playing = playback ?? !reducedMotion
   const soundscape = useSoundscape(weather)
+  const [turntableMotion] = useState(() => createTurntableMotion({ rpm: TURNTABLE.record.rpm }))
+  const [turntablePreview, setTurntablePreview] = useState(false)
 
   function setView(value: boolean) {
     setExpanded(value)
@@ -113,7 +118,10 @@ export function App() {
         gap={gap} samples={samples} reset={reset} reducedMotion={reducedMotion}
         weather={weather} rainAmount={rainAmount} slideSpeed={slideSpeed} frostCoverage={frostCoverage / 100}
         musicBands={soundscape.bands} musicPlaying={soundscape.playing}
-        renderPlayer={appearance => <PlayerControls appearance={appearance} player={soundscape} />}
+        renderPlayer={appearance => appearance === 'turntable'
+          ? <TurntableDeck player={soundscape} motion={turntableMotion}
+              previewing={turntablePreview} onTogglePreview={() => setTurntablePreview(value => !value)} reducedMotion={reducedMotion} />
+          : <PlayerControls appearance={appearance} player={soundscape} />}
         onSelect={selectLayer} onExpanded={setView} onEffective={setEffective} onInk={setInk}
       />
       <header className="stage-toolbar">

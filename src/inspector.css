@@ -454,9 +454,9 @@
 .inspector__shapes-label { color: var(--inspector-muted); font-size: .78rem; }
 .inspector__shape-options {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 7px;
-  width: min(100%, 460px);
+  width: min(100%, 530px);
 }
 .inspector .inspector-shape {
   display: flex;
@@ -478,6 +478,7 @@
 .inspector .inspector-shape:hover { background: #1a2532; color: #eff7ff; }
 .inspector .inspector-shape[aria-pressed="true"] { border-color: #578780; background: #1b3539; color: #dbfffc; }
 .inspector-shape[aria-pressed="true"] path { fill: #89e4e334; stroke: var(--inspector-accent); }
+.inspector-shape .inspector-shape__mechanism :is(circle, path) { fill: none; stroke: currentColor; stroke-width: .83; }
 
 @media (max-width: 550px) {
   .inspector__shapes { align-items: flex-start; flex-direction: column; }

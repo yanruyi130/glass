@@ -207,7 +207,7 @@ export function useSoundscape(weather: WeatherId) {
 
     function updatePlayback() {
       setPlayback({
-        playing: !player.paused && !player.ended,
+        playing: !player.error && !player.paused && !player.ended,
         progress: player.currentTime,
         duration: Number.isFinite(player.duration) ? player.duration : 0,
       })

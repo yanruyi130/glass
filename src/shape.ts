@@ -1,7 +1,9 @@
+import { TURNTABLE } from './turntableLayout'
+
 export interface Point { x: number; y: number }
 export interface ShapeGeometry { width: number; height: number; radius: number }
 
-export type ShapeId = 'rounded-rectangle' | 'cassette' | 'radio'
+export type ShapeId = 'rounded-rectangle' | 'cassette' | 'radio' | 'turntable'
 
 export interface GlassShape {
   id: ShapeId
@@ -72,4 +74,5 @@ export const GLASS_SHAPES: Record<ShapeId, GlassShape> = {
   'rounded-rectangle': roundedRectangle,
   cassette: roundedProfile('cassette', '极简玻璃磁带', .62, .043, 360),
   radio: roundedProfile('radio', '极简玻璃收音机', .465, .081, 396),
+  turntable: roundedProfile('turntable', '唱片机', TURNTABLE.body.height / 100, TURNTABLE.body.corner / 100, TURNTABLE.body.width),
 }

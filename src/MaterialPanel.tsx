@@ -1,5 +1,6 @@
 import { GLASS_SHAPES, type ShapeId } from './shape'
 import type { EffectiveMaterial, InkReading, LayerId, Material } from './material'
+import { parkedTonearmTip, TURNTABLE } from './turntableLayout'
 import './inspector.css'
 
 type ParameterKey = keyof Material
@@ -174,6 +175,12 @@ export function MaterialPanel({
                 <svg viewBox={option.preview.viewBox} aria-hidden="true">
                   <path d={option.preview.path} vectorEffect="non-scaling-stroke" />
                   {option.id === 'cassette' && <path d="M20 31a12 12 0 1 0 24 0a12 12 0 1 0 -24 0M56 31a12 12 0 1 0 24 0a12 12 0 1 0 -24 0" vectorEffect="non-scaling-stroke" />}
+                  {option.id === 'turntable' && <g className="inspector-shape__mechanism">
+                    <circle cx={TURNTABLE.record.x} cy={TURNTABLE.record.y} r={TURNTABLE.record.radius} vectorEffect="non-scaling-stroke" />
+                    <circle cx={TURNTABLE.arm.x} cy={TURNTABLE.arm.y} r="4" vectorEffect="non-scaling-stroke" />
+                    <path d={`M${TURNTABLE.arm.x} ${TURNTABLE.arm.y + 4}L${parkedTonearmTip.x} ${parkedTonearmTip.y}M16 77h68`}
+                      vectorEffect="non-scaling-stroke" />
+                  </g>}
                   {option.id === 'radio' && <path d="M14 15h18m-18 8h18m-18 8h18m12-15h23m-23 14h21m10-7a7 7 0 1 0 14 0a7 7 0 1 0 -14 0" vectorEffect="non-scaling-stroke" />}
                 </svg>
                 <span>{option.id === 'cassette' ? '磁带' : option.id === 'radio' ? '收音机' : option.label}</span>

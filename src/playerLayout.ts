@@ -1,5 +1,6 @@
 import type { FrostClearRegion } from './frostPattern'
 import type { ShapeId } from './shape'
+import { TURNTABLE } from './turntableLayout'
 
 export interface PlayerLayout {
   mark: FrostClearRegion
@@ -39,6 +40,7 @@ const layouts: Record<ShapeId, PlayerLayout> = {
     progress: region(.14, .704, .72, .047),
     transport: region(.44, .793, .12, .158),
   },
+  turntable: TURNTABLE.controls,
   radio: {
     mark: region(.408, .149, .031, .09),
     grille: region(.071, .159, .315, .674),
@@ -57,5 +59,6 @@ export function playerLayout(appearance: ShapeId) {
 
 export function playerClearRegions(appearance: ShapeId): readonly FrostClearRegion[] {
   const { mark, trackText, transport, progress, volume, library } = playerLayout(appearance)
-  return [mark, trackText, transport, progress, volume, library].filter(slot => slot !== undefined)
+  const controls = [mark, trackText, transport, progress, volume, library].filter(slot => slot !== undefined)
+  return appearance === 'turntable' ? [...controls, ...TURNTABLE.surfaceClearance] : controls
 }
