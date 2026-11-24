@@ -252,5 +252,5 @@ export function createBackground(canvas: HTMLCanvasElement) {
     if (climate.snowfall > .002) paintSnow(context, width, height, time, climate.snowfall, detail, palette.foam[2])
   }
 
-  return { canvas, resize, render }
+  return { canvas, resize, render, destroy: liquid.destroy }
 }

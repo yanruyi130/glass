@@ -1,8 +1,15 @@
+import {
+  BufferAttribute, BufferGeometry, CanvasTexture, Color, DoubleSide, DynamicDrawUsage, LinearFilter,
+  Mesh, PerspectiveCamera, Scene, ShaderMaterial, SRGBColorSpace, Vector2, WebGLRenderer,
+} from 'three'
 import type { AudioInput } from './background'
-import type { Climate } from './climate'
+import type { Climate, Rgb } from './climate'
 import { clamp, mix } from './material'
 
-const SURFACE_ROWS = 76
+const ACROSS = 144
+const ALONG = 76
+const ROW = ACROSS + 1
+const ADVANCE = .92
 
 export function getLiquidMotion(audio: AudioInput) {
   const energy = Math.sqrt(clamp(audio.energy))
@@ -13,199 +20,250 @@ export function getLiquidMotion(audio: AudioInput) {
 }
 
 type Motion = ReturnType<typeof getLiquidMotion>
-type SurfaceSample = { v: number; rolled: number; sink: number; tail: number; shoulder: number }
+type Inspection = 'wireframe' | 'side'
 
-function skin(x: number, phase: number, amplitude: number, motion: Motion) {
-  const world = x - .116 * phase
-  const angle = world * 4.64 + 1.58
-  const sweep = Math.sin(.61 * angle + .91 + phase * .06)
-  const run = angle + (.68 + .52 * motion.bend) * sweep
-  const bend = Math.cos(run)
-  const shoulder = Math.sin(1.34 * angle + .29 - phase * .073)
-  const lift = amplitude * (1 + .77 * motion.swell)
-  return {
-    world,
-    near: x - .069 * phase,
-    lift,
-    rim: .44 + lift * (.206 * bend - .093 * shoulder),
-    fold: .155 + lift * (.036 * sweep + .051 * shoulder),
-    base: lift * (.072 * bend + .026 * sweep),
-    shear: .13 * shoulder + (.07 + .12 * motion.bend) * sweep,
-    foldAxis: .288 + (.072 + .036 * motion.bend) * sweep + .060 * shoulder,
-    foldLift: (.13 + .095 * bend + .072 * shoulder) * lift,
-    light: clamp(.35 + .35 * Math.cos(run - .33) + .39 * Math.cos(.83 * angle - .8)),
+const VERTEX = `
+  attribute float cavity;
+  varying vec3 vSurface;
+  varying vec3 vNormal;
+  varying vec3 vViewNormal;
+  varying float vCavity;
+
+  void main() {
+    vSurface = position;
+    vNormal = normal;
+    vViewNormal = normalMatrix * normal;
+    vCavity = cavity;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
   }
+`
+
+const FRAGMENT = `
+  uniform vec3 uShade, uBody, uFill, uGlint;
+  uniform float uSun, uShimmer, uCloud, uCloudX;
+  uniform vec2 uFrame;
+  uniform sampler2D uEnvironment;
+  varying vec3 vSurface;
+  varying vec3 vNormal;
+  varying vec3 vViewNormal;
+  varying float vCavity;
+
+  vec3 readEnvironment(vec2 center, vec2 radius) {
+    vec3 color = texture2D(uEnvironment, center).rgb * 0.36;
+    color += texture2D(uEnvironment, center + vec2(radius.x, radius.y * 0.42)).rgb * 0.16;
+    color += texture2D(uEnvironment, center - vec2(radius.x, radius.y * 0.42)).rgb * 0.16;
+    color += texture2D(uEnvironment, center + vec2(-radius.x * 0.42, radius.y)).rgb * 0.16;
+    color += texture2D(uEnvironment, center - vec2(-radius.x * 0.42, radius.y)).rgb * 0.16;
+    return color;
+  }
+
+  void main() {
+    float face = gl_FrontFacing ? 1.0 : -1.0;
+    vec3 n = normalize(vNormal) * face;
+    vec3 eye = normalize(cameraPosition - vSurface);
+    vec3 light = normalize(vec3(0.42 + 0.17 * uSun, 0.73, 0.42));
+    vec3 reflected = reflect(-eye, n);
+    vec3 halfDirection = normalize(light + eye);
+    float diffuse = max(0.0, dot(n, light));
+    float gloss = max(0.0, dot(n, halfDirection));
+    float facing = max(0.0, dot(n, eye));
+    vec2 uv = gl_FragCoord.xy / uFrame;
+    float cloudX = uv.x - uCloudX;
+    float cloud = uCloud / (1.0 + 12.0 * cloudX * cloudX);
+    float tone = clamp(0.10 + diffuse * 0.56 + facing * 0.14 - vCavity * 0.39 - cloud * 0.095, 0.0, 1.0);
+    vec3 base = mix(uShade, uBody, tone) * (0.73 + 0.27 * diffuse - 0.10 * vCavity);
+
+    // A broad studio reflection and a small grazing reflection use the same
+    // normal as the diffuse light. Neither is attached to a mesh boundary.
+    float broad = pow(gloss, 5.0);
+    float core = pow(gloss, 23.0);
+    float rim = pow(1.0 - facing, 3.1);
+    vec3 viewNormal = normalize(vViewNormal) * face;
+    float density = smoothstep(-5.5, 3.6, vSurface.z) * 0.34 + vCavity * 0.46;
+    vec2 units = vec2(uFrame.y / uFrame.x, 1.0);
+    vec2 shift = viewNormal.xy * (0.047 + (1.0 - facing) * 0.031);
+    vec3 environment = readEnvironment(uv + shift * units, (0.013 + density * 0.020) * units);
+    vec3 transmission = mix(environment * mix(uBody, vec3(1.0), 0.66), uFill, 0.12);
+    base = mix(base, transmission, (0.23 + facing * 0.39) * (1.0 - density * 0.74));
+    float reflectedSky = max(0.0, dot(reflected, normalize(vec3(0.31, 0.31, -0.90))));
+    float skyReflection = (0.19 * pow(reflectedSky, 9.0) + 0.34 * pow(reflectedSky, 29.0)) * (0.24 + 0.76 * rim);
+    base = mix(base, uFill, 0.29 * broad + 0.044 * rim);
+    float specular = clamp(0.29 * core + (1.0 + uShimmer * 0.14) * skyReflection, 0.0, 0.48);
+    gl_FragColor = vec4(mix(base, uGlint, specular), 1.0);
+    #include <colorspace_fragment>
+  }
+`
+
+function makeSurfaceGeometry() {
+  const positions = new BufferAttribute(new Float32Array(ROW * (ALONG + 1) * 3), 3).setUsage(DynamicDrawUsage)
+  const normals = new BufferAttribute(new Float32Array(positions.count * 3), 3).setUsage(DynamicDrawUsage)
+  const cavities = new BufferAttribute(new Float32Array(positions.count), 1).setUsage(DynamicDrawUsage)
+  const indices = new Uint16Array(ACROSS * ALONG * 6)
+  let index = 0
+  for (let row = 0; row < ALONG; row++) {
+    for (let col = 0; col < ACROSS; col++) {
+      const a = row * ROW + col
+      const b = a + 1
+      const c = a + ROW
+      const d = c + 1
+      indices.set([a, c, b, b, c, d], index)
+      index += 6
+    }
+  }
+  const geometry = new BufferGeometry()
+  geometry.setAttribute('position', positions)
+  geometry.setAttribute('normal', normals)
+  geometry.setAttribute('cavity', cavities)
+  geometry.setIndex(new BufferAttribute(indices, 1))
+  return { geometry, positions, cavities }
 }
 
-// A section through the sheet has a rolling lip, a returning slope and a
-// broad basin. Its projected Y can turn back at the lip, exposing both faces.
-function sampleSurface(
-  points: Float32Array, offset: number, section: ReturnType<typeof skin>,
-  sample: SurfaceSample, phase: number,
+const sections = Array.from({ length: ALONG + 1 }, (_, row) => {
+  const depth = row / ALONG
+  return { depth, z: mix(-9.7, 7.4, depth), returnCurve: Math.exp(-18 * depth), outer: (1 - depth) ** 3 }
+})
+
+function deform(
+  surface: ReturnType<typeof makeSurfaceGeometry>, width: number, phase: number, amplitude: number, motion: Motion,
 ) {
-  const { world, near, lift, rim, fold, base, shear, foldAxis, foldLift } = section
-  const { v, rolled, sink, tail } = sample
-  const turn = world + shear * v + .21 * v * v
-  const nearTurn = near + shear * v * .65 + .14 * v * v
-  const flare = .5 + .5 * Math.cos(nearTurn * 6.64 - .90 + phase * .048)
-  const shoulders = flare * flare
-  const hollow = (1 - flare) * (1 - flare)
-  const slope = .5 + .5 * Math.sin(turn * 4.07 - 4.28 * v + .8)
-  const distance = (v - foldAxis) * 7.2
-  const dome = 1 / (1 + distance * distance)
-  const innerFold = foldLift * dome * dome * (1 - v)
-  const nearFold = lift * shoulders * sample.shoulder
-  const depth = base + .27 * v + (.074 + fold * .42) * tail + innerFold
-    + lift * ((.56 * shoulders - .17 * hollow) * sink + .086 * slope * v * (1 - v)) + nearFold * .12
-  points[offset] = rim + (1.34 - rim) * v - fold * rolled + innerFold * .41 - nearFold * .16
-    + lift * (.058 * hollow - .165 * shoulders) * sink
-  points[offset + 1] = depth
-  points[offset + 2] = 1.02 * shoulders * sink + .13 * slope * v + innerFold * 1.72 + .020 * (1 - sink)
+  const { geometry, positions, cavities } = surface
+  const span = width * 2
+  const drive = amplitude * (1 + .72 * motion.swell)
+  const offset = phase * ADVANCE
+  const flex = .70 + .64 * motion.bend
+  const drift = phase * .091
+  for (let col = 0; col < ROW; col++) {
+    const x = -width + span * col / ACROSS
+    const advected = x - offset
+    const sweep = Math.sin(advected * .31 + drift)
+    const turn = Math.cos(advected * .48 - drift * .64 + .7)
+    for (const [row, { depth, z: base, returnCurve, outer }] of sections.entries()) {
+      // One continuous map from lattice coordinates to world space. The
+      // far boundary curls beneath the rising surface in world Y and Z.
+      const z = base + 1.65 * returnCurve + outer * (1.21 * sweep + .52 * turn)
+      const u = advected + flex * (.94 * Math.sin(.29 * z + sweep) + .78 * Math.sin(.51 * z - .33 * advected - drift))
+      const v = z + .82 * Math.sin(.34 * u - .25 * z + drift)
+      const crest = -3.85 + 2.52 * Math.sin(.22 * u + .92 + drift * .72)
+      const acrossCrest = (v - crest) / (2.06 + .48 * turn)
+      const ridge = Math.exp(-acrossCrest * acrossCrest)
+      const crestLift = 1.12 + .85 * Math.cos(.26 * u + .65 - drift * .46)
+      const basin = .64 * Math.sin(.39 * u + .37 * v + 2.1) + .43 * Math.cos(.41 * v - .41 * u + 1.08)
+      const shoulder = Math.cos(.71 * u + .23 * z + 2.73 + .41 * sweep)
+      const nearWeight = depth * depth * (3 - 2 * depth)
+      const acrossBasin = (v - 3.08 - .93 * sweep) / 3.24
+      const front = (1.46 * Math.exp(-acrossBasin * acrossBasin) * shoulder + .46 * basin) * nearWeight
+      const y = -.44 + drive * (ridge * crestLift + basin * .60 + front) - 1.28 * returnCurve
+      positions.setXYZ(row * ROW + col, x, y, z)
+    }
+  }
+
+  const sx = ACROSS / span
+  const sz = ALONG / (sections[ALONG].z - sections[0].z)
+  for (let row = 0; row <= ALONG; row++) {
+    for (let col = 0; col < ROW; col++) {
+      const i = row * ROW + col
+      const y = positions.getY(i)
+      const left = positions.getY(col > 0 ? i - 1 : i)
+      const right = positions.getY(col < ACROSS ? i + 1 : i)
+      const far = positions.getY(row > 0 ? i - ROW : i)
+      const near = positions.getY(row < ALONG ? i + ROW : i)
+      const curvature = (left + right - 2 * y) * sx * sx + (far + near - 2 * y) * sz * sz
+      cavities.setX(i, clamp(curvature * .72))
+    }
+  }
+
+  positions.needsUpdate = true
+  cavities.needsUpdate = true
+  geometry.computeVertexNormals()
+}
+
+function useColor(output: Color, [r, g, b]: Rgb) {
+  output.setRGB(r / 255, g / 255, b / 255, SRGBColorSpace)
 }
 
 export function createLiquidSurface() {
-  const texture = document.createElement('canvas')
-  const context = texture.getContext('2d')!
-  const samples = Array.from({ length: SURFACE_ROWS + 1 }, (_, index): SurfaceSample => {
-    // More vertices at the curved lip, where the surface can fold over itself.
-    const v = (index / SURFACE_ROWS) ** 1.54
-    return {
-      v,
-      rolled: (1 - Math.exp(-26 * v)) * Math.exp(-5.9 * v),
-      sink: v * v * (3 - 2 * v),
-      tail: 1 - Math.exp(-12 * v),
-      shoulder: (1 + ((v - .77) * 8.4) ** 2) ** -2,
-    }
+  const canvas = document.createElement('canvas')
+  const context = canvas.getContext('webgl2', { alpha: true, antialias: true })
+  const renderer = context && new WebGLRenderer({ canvas, context })
+  const environmentCanvas = document.createElement('canvas')
+  environmentCanvas.width = 288
+  environmentCanvas.height = 192
+  const environment = environmentCanvas.getContext('2d', { alpha: false })!
+  const environmentTexture = new CanvasTexture(environmentCanvas)
+  environmentTexture.colorSpace = SRGBColorSpace
+  environmentTexture.minFilter = LinearFilter
+  environmentTexture.generateMipmaps = false
+  const surface = makeSurfaceGeometry()
+  const scene = new Scene()
+  const camera = new PerspectiveCamera(44, 1, .2, 60)
+  const uniforms = {
+    uShade: { value: new Color() }, uBody: { value: new Color() },
+    uFill: { value: new Color() }, uGlint: { value: new Color() },
+    uSun: { value: 0 }, uShimmer: { value: 0 },
+    uCloud: { value: 0 }, uCloudX: { value: .5 },
+    uFrame: { value: new Vector2() }, uEnvironment: { value: environmentTexture },
+  }
+  const material = new ShaderMaterial({
+    vertexShader: VERTEX, fragmentShader: FRAGMENT, uniforms, side: DoubleSide, forceSinglePass: true,
   })
-  const lighting = new Float32Array(samples.length * 2)
-  let points = new Float32Array(0)
-  let depthBuffer = new Float32Array(0)
-  let image: ImageData | undefined
+  const mesh = new Mesh(surface.geometry, material)
+  mesh.frustumCulled = false
+  scene.add(mesh)
+  renderer?.setClearColor(0, 0)
 
   function render(
     target: CanvasRenderingContext2D, width: number, height: number, detail: number,
-    phase: number, climate: Climate, audio: AudioInput, cloudX: number,
+    phase: number, climate: Climate, audio: AudioInput, cloudX: number, inspection?: Inspection,
   ) {
-    const columns = Math.max(2, Math.min(Math.round(450 * detail), Math.round(width * .71)))
-    const rows = Math.max(2, Math.min(Math.round(348 * detail), Math.round(height * .72)))
-    const columnStride = samples.length * 3
-    if (!image || image.width !== columns || image.height !== rows) {
-      texture.width = columns
-      texture.height = rows
-      image = context.createImageData(columns, rows)
-      points = new Float32Array((columns + 2) * columnStride)
-      depthBuffer = new Float32Array(rows)
+    if (!renderer || context?.isContextLost()) return
+    const scale = Math.min(.92, 815 * detail / width, 505 * detail / height)
+    const frameWidth = Math.max(2, Math.round(width * scale))
+    const frameHeight = Math.max(2, Math.round(height * scale))
+    if (canvas.width !== frameWidth || canvas.height !== frameHeight) renderer.setSize(frameWidth, frameHeight, false)
+    const aspect = width / height
+    const narrow = clamp((1.55 - aspect) / .90)
+    camera.aspect = aspect
+    if (import.meta.env.DEV && inspection === 'side') {
+      camera.fov = 50
+      camera.position.set(12.9, 3.65, 4.1)
+      camera.lookAt(0, .35, -.9)
+    } else {
+      camera.fov = 42 + 9 * narrow
+      camera.position.set(0, 3.08 + .34 * narrow, 8.35 + .87 * narrow)
+      camera.lookAt(0, .53, -.49)
     }
+    camera.updateProjectionMatrix()
+    if (import.meta.env.DEV) material.wireframe = inspection === 'wireframe'
 
     const motion = getLiquidMotion(audio)
-    const { palette, cloudCover, sunlight, waveAmplitude } = climate
-    const xStep = (2 * width / height) / columns
-    const pixels = image.data
-    const stride = columns * 4
-    pixels.fill(0)
-
-    for (let column = -1; column <= columns; column++) {
-      const section = skin((column + .5) / columns, phase, waveAmplitude, motion)
-      const offset = (column + 1) * columnStride
-      for (let j = 0; j < samples.length; j++) {
-        sampleSurface(points, offset + 3 * j, section, samples[j], phase)
-      }
-    }
-
-    const shade = palette.undertow[0]
-    const body = palette.current[2]
-    const glint = palette.light[1]
-    const lip = palette.foam[2]
-    const lightX = .25 + .17 * sunlight
-    const lightY = -.52
-    const lightZ = Math.sqrt(1 - lightX * lightX - lightY * lightY)
-
-    for (let column = 0; column < columns; column++) {
-      const x = (column + .5) / columns
-      const offset = (column + 1) * columnStride
-      const shadow = cloudCover * .095 / (1 + 13 * (x - cloudX) ** 2)
-      const hx = lightX - (x - .5) * .34
-      const hy = lightY + .06
-      const hz = lightZ + 1
-      const reflectionScale = 1 / Math.hypot(hx, hy, hz)
-      const section = skin(x, phase, waveAmplitude, motion)
-      let crest = Infinity
-      depthBuffer.fill(-Infinity)
-
-      for (let j = 0; j < samples.length; j++) {
-        const p = offset + 3 * j
-        const before = j > 0 ? p - 3 : p
-        const after = j < SURFACE_ROWS ? p + 3 : p
-        const dy = points[after] - points[before]
-        const dz = points[after + 1] - points[before + 1]
-        const acrossY = points[p + columnStride] - points[p - columnStride]
-        const acrossZ = points[p + columnStride + 1] - points[p - columnStride + 1]
-        const face = dy < 0 ? -1 : 1
-        const nx = (acrossY * dz - acrossZ * dy) * face
-        const ny = -xStep * dz * face
-        const nz = xStep * dy * face
-        const inverse = 1 / Math.sqrt(Math.max(1e-16, nx * nx + ny * ny + nz * nz))
-        const diffuse = clamp((nx * lightX + ny * lightY + nz * lightZ) * inverse)
-        const reflected = clamp((nx * hx + ny * hy + nz * hz) * inverse * reflectionScale)
-        const grazing = 1 - nz * inverse
-        const { v } = samples[j]
-        const form = points[p + 2]
-        const gloss = reflected ** 4
-        const film = gloss * gloss * (.27 + .065 * motion.shimmer)
-        const rimLight = clamp(1 - v / .15) * grazing ** 6 * section.light * (.25 + .05 * motion.shimmer)
-        lighting[j * 2] = clamp(.10 + .30 * diffuse + .73 * form - shadow)
-        lighting[j * 2 + 1] = (film + gloss * .15) * (.26 + .74 * form) + rimLight
-        crest = Math.min(crest, points[p] * rows)
-      }
-
-      // Project the continuous section and resolve front/back by depth. The
-      // light band is carried by the same curved surface that hides the fold.
-      for (let j = 0; j < SURFACE_ROWS; j++) {
-        const p = offset + 3 * j
-        const start = points[p] * rows
-        const end = points[p + 3] * rows
-        if (Math.abs(end - start) < .001) continue
-        const d = 1 / (end - start)
-        const top = Math.max(0, Math.ceil(Math.min(start, end) - .5))
-        const bottom = Math.min(rows, Math.ceil(Math.max(start, end) - .5))
-        const a = lighting[j * 2], b = lighting[j * 2 + 2]
-        const sa = lighting[j * 2 + 1], sb = lighting[j * 2 + 3]
-        let index = top * stride + column * 4
-        for (let y = top; y < bottom; y++, index += stride) {
-          const f = clamp((y + .5 - start) * d)
-          const depth = mix(points[p + 1], points[p + 4], f)
-          if (depth <= depthBuffer[y]) continue
-          depthBuffer[y] = depth
-          const tone = mix(a, b, f)
-          const edge = (1 - clamp((y + .5 - crest) / 1.75)) * section.light
-          const sheen = clamp(mix(sa, sb, f) + edge * .82, 0, .76)
-          const absorption = .80 + tone * .20
-          const red = mix(shade[0], body[0], tone) * absorption
-          const green = mix(shade[1], body[1], tone) * absorption
-          const blue = mix(shade[2], body[2], tone) * absorption
-          pixels[index] = mix(red, mix(glint[0], lip[0], edge * .68), sheen)
-          pixels[index + 1] = mix(green, mix(glint[1], lip[1], edge * .68), sheen)
-          pixels[index + 2] = mix(blue, mix(glint[2], lip[2], edge * .68), sheen)
-          pixels[index + 3] = 250
-        }
-      }
-
-      // Cover the first partial scanline at the silhouette. Interpolating the
-      // coverage alone keeps its narrow reflection stable at different sizes.
-      const edgeRow = Math.floor(crest)
-      if (edgeRow >= 0 && edgeRow < rows - 1) {
-        const index = edgeRow * stride + column * 4
-        if (pixels[index + 3] === 0) {
-          pixels[index] = pixels[index + stride]
-          pixels[index + 1] = pixels[index + stride + 1]
-          pixels[index + 2] = pixels[index + stride + 2]
-        }
-        pixels[index + 3] = (edgeRow + 1 - crest) * 250
-      }
-    }
-    context.putImageData(image, 0, 0)
-    target.drawImage(texture, 0, 0, 1, 1)
+    deform(surface, Math.max(8.8, 9.1 * aspect), phase, climate.waveAmplitude, motion)
+    const { palette } = climate
+    useColor(uniforms.uShade.value, palette.undertow[0])
+    useColor(uniforms.uBody.value, palette.current[1])
+    useColor(uniforms.uFill.value, palette.current[2])
+    useColor(uniforms.uGlint.value, palette.foam[1])
+    uniforms.uSun.value = climate.sunlight
+    uniforms.uShimmer.value = motion.shimmer
+    uniforms.uCloud.value = climate.cloudCover
+    uniforms.uCloudX.value = cloudX
+    // Capture the current environment before compositing the mesh into it.
+    // The liquid resolves reflection and transmission in one depth-tested pass.
+    environment.drawImage(target.canvas, 0, 0, environmentCanvas.width, environmentCanvas.height)
+    environmentTexture.needsUpdate = true
+    uniforms.uFrame.value.set(frameWidth, frameHeight)
+    renderer.render(scene, camera)
+    target.drawImage(canvas, 0, 0, 1, 1)
   }
 
-  return { render }
+  function destroy() {
+    surface.geometry.dispose()
+    material.dispose()
+    environmentTexture.dispose()
+    renderer?.dispose()
+  }
+
+  return {
+    render, destroy,
+    inspectGeometry: import.meta.env.DEV ? () => ({ geometry: surface.geometry, camera, material, canvas }) : undefined,
+  }
 }

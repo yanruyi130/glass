@@ -378,6 +378,7 @@ export function GlassStage(props: Props) {
       cancelAnimationFrame(frame)
       window.clearTimeout(trailingSample)
       renderer?.destroy()
+      background.destroy()
       document.removeEventListener('visibilitychange', visibilityChanged)
       canvas.removeEventListener('webglcontextlost', lost)
       canvas.removeEventListener('webglcontextrestored', restored)
