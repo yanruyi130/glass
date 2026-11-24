@@ -2,163 +2,175 @@ import type { AudioInput } from './background'
 import type { Climate } from './climate'
 import { clamp, mix } from './material'
 
-const FOLDS = [
-  { offset: 0, rate: .67, phase: .35, depth: .175, height: .082, color: 'cobalt' },
-  { offset: .118, rate: .86, phase: 1.94, depth: .20, height: .112, color: 'current' },
-  { offset: .261, rate: .73, phase: 3.17, depth: .236, height: .138, color: 'fold' },
-  { offset: .413, rate: .55, phase: 4.08, depth: .27, height: .123, color: 'undertow' },
+const NEAR = .8
+const FAR = 36
+const RAIN_DEPTH = 3.6
+const EYE_HEIGHT = 1.04
+const FOCAL_LENGTH = .96
+const TRAVEL_PER_PHASE = .56
+
+// Every harmonic samples the same advected world X, with independent headings
+// in depth. The field extends past both sides of the viewport without a wrap.
+const WAVES = [
+  { x: 1.65, z: .94, offset: .55, height: .132 },
+  { x: 2.63, z: -1.22, offset: 2.02, height: .075 },
+  { x: 4.17, z: 1.53, offset: 3.57, height: .031 },
+  { x: 8.35, z: -3.71, offset: 1.48, height: .007 },
 ] as const
 
-const MAIN_FOLD = 1
-const WAVE_NUMBER = 5.6
-const smooth = (value: number) => {
+function smooth(value: number) {
   const t = clamp(value)
   return t * t * (3 - 2 * t)
 }
-
-// Cross-section through a raised fold and the trough behind it. The derivatives
-// of this section and the moving crest give the actual surface normals.
-const SECTION_LAST = 319
-const SECTION_SCALE = 92
-const SECTION_START = -.25
-const elevation = new Float32Array(SECTION_LAST + 1)
-const derivative = new Float32Array(SECTION_LAST + 1)
-for (let index = 0; index <= SECTION_LAST; index++) {
-  const cross = SECTION_START + index / SECTION_SCALE
-  const ridge = (cross - .60) * 1.38
-  const trough = (cross - 1.76) * 1.18
-  const raised = Math.exp(-ridge * ridge)
-  const recessed = .47 * Math.exp(-trough * trough)
-  elevation[index] = raised - recessed
-  derivative[index] = -2.76 * ridge * raised + 2.36 * trough * recessed
-}
-
-const columns = (width: number) => ({
-  crest: new Float32Array(width + 2),
-  depth: new Float32Array(width + 2),
-  height: new Float32Array(width + 2),
-})
 
 export function getLiquidMotion(audio: AudioInput) {
   const drive = Math.sqrt(clamp(audio.energy))
   const swell = clamp(audio.low) * drive
   const bend = clamp(audio.mid) * drive
   const shimmer = Math.sqrt(clamp(audio.high)) * drive
-  return { swell, bend, shimmer, speed: 1 + .98 * swell + .28 * bend }
+  return { swell, bend, shimmer, speed: 1 + .88 * swell + .22 * bend }
+}
+
+function depthRows(count: number) {
+  return Array.from({ length: count }, (_, index) => {
+    // Equal inverse-depth steps have equal screen spacing on still water.
+    const inverse = mix(1 / FAR, 1 / NEAR, index / (count - 1))
+    const z = 1 / inverse
+    return {
+      z,
+      projection: FOCAL_LENGTH * inverse,
+      fade: smooth((z - 3) / 16),
+      visibility: 1 - smooth((z - 12) / (FAR - 12)),
+      ripple: 1 / (1 + .06 * z * z),
+    }
+  })
 }
 
 export function createLiquidSurface() {
   const texture = document.createElement('canvas')
   const context = texture.getContext('2d')!
   let image: ImageData | undefined
-  let profiles = FOLDS.map(() => columns(0))
+  let rows: ReturnType<typeof depthRows> = []
+  let rainRow = 0
+  let rainProfile = new Float32Array(0)
 
   function render(
     target: CanvasRenderingContext2D, width: number, height: number, detail: number,
     phase: number, climate: Climate, audio: AudioInput, cloudX: number,
   ) {
-    // Shade a small, smooth field before scaling it into the live stage canvas.
-    const fieldWidth = Math.max(2, Math.min(Math.round(420 * detail), Math.round(width * .55)))
-    const fieldHeight = Math.max(2, Math.min(Math.round(266 * detail), Math.round(height * .58)))
+    const fieldWidth = Math.max(2, Math.min(Math.round(428 * detail), Math.round(width * .58)))
+    const fieldHeight = Math.max(2, Math.min(Math.round(278 * detail), Math.round(height * .65)))
     if (!image || image.width !== fieldWidth || image.height !== fieldHeight) {
       texture.width = fieldWidth
       texture.height = fieldHeight
       image = context.createImageData(fieldWidth, fieldHeight)
-      profiles = FOLDS.map(() => columns(fieldWidth))
+      rows = depthRows(Math.max(67, Math.round(fieldHeight * .49)))
+      rainRow = rows.findIndex(row => row.z <= RAIN_DEPTH)
+      rainProfile = new Float32Array(fieldWidth)
     }
+
     const pixels = image.data
     pixels.fill(0)
-    const narrow = clamp((1.85 - width / height) / 1.1)
-    const { swell, bend, shimmer } = getLiquidMotion(audio)
-    const aspect = height / width
+    const stride = fieldWidth * 4
     const { palette } = climate
+    const { swell, bend, shimmer } = getLiquidMotion(audio)
+    const distance = phase * TRAVEL_PER_PHASE
+    const aspect = width / height
+    const narrow = clamp((1.55 - aspect) / 1.2)
+    const horizon = (.345 + narrow * .048) * fieldHeight
+    const waveAmplitude = climate.waveAmplitude
+    const amplitudes = [
+      WAVES[0].height * (1 + .79 * swell),
+      WAVES[1].height * (1 + .65 * swell + .19 * bend),
+      WAVES[2].height * (1 + 1.07 * bend),
+      WAVES[3].height * (1 + .77 * shimmer),
+    ]
+    const distantBody = palette.distant[2]
+    const distantShade = palette.cobalt[1]
+    const nearBody = palette.current[1]
+    const nearShade = palette.undertow[0]
+    const glossColor = palette.light[1]
 
-    for (const [layer, fold] of FOLDS.entries()) {
-      const { crest, depth, height: rise } = profiles[layer]
-      const travel = phase * fold.rate / WAVE_NUMBER
-      const amplitude = 1 + .82 * swell + .24 * bend
+    for (let column = 0; column < fieldWidth; column++) {
+      const screenX = (column + .5) / fieldWidth
+      const lateral = (screenX - .5) * aspect / FOCAL_LENGTH
+      const cloud = 1 - climate.cloudCover * .14 / (1 + 10 * (screenX - cloudX) ** 2)
+      const sun = climate.sunlight * .14 / (1 + 17 * (screenX - .805) ** 2)
+      let lastY = horizon, lastRed = distantBody[0], lastGreen = distantBody[1], lastBlue = distantBody[2], lastAlpha = 0
 
-      // Sample every part of the fold in the same moving coordinates. As travel
-      // increases, its crests, troughs and smaller ripples all advance to the right.
-      for (let column = 0; column < crest.length; column++) {
-        const x = (column - .5) / fieldWidth
-        const flowingX = x - travel
-        const crestPhase = WAVE_NUMBER * flowingX - fold.phase
-        const curl = Math.sin(3.9 * flowingX + fold.phase + 1.5)
-        const broadWave = .108 * Math.sin(crestPhase) + .043 * Math.sin(8.25 * flowingX + fold.phase)
-        const ripples = .023 * bend * Math.sin(11.2 * flowingX - fold.phase)
-          + .0045 * shimmer * Math.sin(19 * flowingX)
-        const approach = .78 - .46 * x
-        const perspective = narrow * (.028 * x - .112 * (1 - x))
-        crest[column] = approach + fold.offset + perspective + .034 * climate.sunlight
-          + climate.waveAmplitude * (amplitude * broadWave + ripples)
-        depth[column] = fold.depth * (1 + .22 * curl + .30 * bend * Math.cos(crestPhase - .9))
-        rise[column] = fold.height * (1 + .19 * Math.sin(crestPhase + .85)) * (1 + .65 * swell)
-      }
-
-      const [shadow, , body] = palette[fold.color]
-      const [air, tint, sun] = palette.light
-      const edgeSoftness = layer === 0 ? .024 : .062 + layer * .007
-      const lightColor = layer === 0 ? air : layer === MAIN_FOLD ? palette.foam[1] : tint
-      const shadowOpacity = .17 * climate.cloudCover
-
-      for (let x = 0; x < fieldWidth; x++) {
-        const at = x + 1
-        const u = (x + .5) / fieldWidth
-        const edge = crest[at] - edgeSoftness * .42
-        const widthOfFold = depth[at]
-        const heightOfFold = rise[at]
-        const edgeSlope = (crest[at + 1] - crest[at - 1]) * .5 * fieldWidth
-        const depthSlope = (depth[at + 1] - depth[at - 1]) * .5 * fieldWidth
-        const heightSlope = (rise[at + 1] - rise[at - 1]) * .5 * fieldWidth
-        const curvature = clamp((crest[at + 1] - 2 * crest[at] + crest[at - 1]) * fieldWidth * fieldWidth * .16, -.65, .65)
-        const reflected = .36 + .64 * smooth(.5 + .5 * Math.cos(WAVE_NUMBER * (u - travel) - fold.phase - .94))
-        const warm = climate.sunlight * .11 / (1 + 35 * (u - .805) ** 2)
-        const cloud = 1 - shadowOpacity / (1 + 12 * (u - cloudX) ** 2)
-        const lightR = mix(lightColor[0], sun[0], warm)
-        const lightG = mix(lightColor[1], sun[1], warm)
-        const lightB = mix(lightColor[2], sun[2], warm)
-
-        for (let y = Math.max(0, Math.floor(edge * fieldHeight)); y < fieldHeight; y++) {
-          const v = (y + .5) / fieldHeight
-          const opacity = smooth((v - edge) / edgeSoftness)
-          if (opacity <= 0) continue
-          const cross = (v - crest[at]) / widthOfFold
-          const section = Math.min(SECTION_LAST, Math.max(0, Math.round((cross - SECTION_START) * SECTION_SCALE)))
-          const dy = derivative[section] * heightOfFold / widthOfFold
-          const dx = aspect * (heightSlope * elevation[section] - dy * (edgeSlope + cross * depthSlope))
-          const normal = 1 / Math.sqrt(1 + dx * dx + dy * dy)
-
-          // Soft key light, wide reflected light, and a smaller gloss on the
-          // turning face. Lighting follows the same field as the silhouette.
-          const diffuse = clamp((.78 + .36 * dx - .51 * dy) * normal)
-          const reflection = clamp((.88 - .34 * dx + .33 * dy) * normal)
-          const broadLight = reflection ** 4
-          const glossyLight = broadLight * broadLight * reflection * reflection
-          const face = .87 + .16 * elevation[section] + .085 * curvature
-          const tone = clamp((.055 + .82 * diffuse) * face)
-          const gloss = clamp((.22 * broadLight + (.48 + .13 * shimmer) * glossyLight)
-            * reflected * (.78 + .32 * elevation[section]), 0, .57)
-          const shade = cloud * (.84 + .16 * diffuse)
-          const pixel = (y * fieldWidth + x) * 4
-          const alpha = opacity + pixels[pixel + 3] / 255 * (1 - opacity)
-          const blend = opacity / alpha
-          pixels[pixel] = mix(pixels[pixel], mix(mix(shadow[0], body[0], tone) * shade, lightR, gloss), blend)
-          pixels[pixel + 1] = mix(pixels[pixel + 1], mix(mix(shadow[1], body[1], tone) * shade, lightG, gloss), blend)
-          pixels[pixel + 2] = mix(pixels[pixel + 2], mix(mix(shadow[2], body[2], tone) * shade, lightB, gloss), blend)
-          pixels[pixel + 3] = alpha * 255
+      // Each projected column is traversed from far to near. If a ridge folds
+      // over a more distant slope, its nearer spans replace that slope.
+      for (const [rowIndex, row] of rows.entries()) {
+        const worldX = lateral * row.z - distance
+        let elevation = 0, slopeX = 0, slopeZ = 0
+        for (let component = 0; component < WAVES.length; component++) {
+          const wave = WAVES[component]
+          const depthResponse = component < 2 ? 1 - .57 * row.fade : row.ripple
+          const amplitude = amplitudes[component] * waveAmplitude * depthResponse
+          const angle = wave.x * worldX + wave.z * row.z + wave.offset
+          const slope = amplitude * Math.cos(angle)
+          elevation += amplitude * Math.sin(angle)
+          slopeX += slope * wave.x
+          slopeZ += slope * wave.z
         }
+
+        const viewHeight = EYE_HEIGHT - elevation
+        const screenY = horizon + viewHeight * row.projection * fieldHeight
+        if (rowIndex === rainRow) rainProfile[column] = screenY / fieldHeight
+        const normalScale = 1 / Math.sqrt(1 + slopeX * slopeX + slopeZ * slopeZ)
+        const diffuse = clamp((.86 - .32 * slopeX + .40 * slopeZ) * normalScale)
+        const viewY = viewHeight / row.z
+        const viewScale = 1 / Math.sqrt(1 + lateral * lateral + viewY * viewY)
+        const facing = clamp((slopeX * lateral + viewY + slopeZ) * normalScale * viewScale)
+
+        // Half-vector specular follows the same slopes as the projected waves.
+        const halfX = .19 - lateral * viewScale
+        const halfY = .96 + viewY * viewScale
+        const halfZ = -.21 - viewScale
+        const reflected = clamp((halfY - slopeX * halfX - slopeZ * halfZ) * normalScale
+          / Math.sqrt(halfX * halfX + halfY * halfY + halfZ * halfZ))
+        const shine = reflected ** 5
+        const fresnel = (1 - facing) ** 4
+        const contrast = 1 - .61 * row.fade
+        const tone = clamp(.51 + (diffuse - .72) * contrast + elevation * .56)
+        const gloss = clamp((shine * .22 + shine * shine * (.36 + .13 * shimmer))
+          * (1 - .55 * row.fade) + fresnel * (.07 + sun), 0, .57)
+        const mist = row.fade * .78
+        const red = mix(mix(mix(nearShade[0], distantShade[0], mist), mix(nearBody[0], distantBody[0], mist), tone) * cloud, glossColor[0], gloss)
+        const green = mix(mix(mix(nearShade[1], distantShade[1], mist), mix(nearBody[1], distantBody[1], mist), tone) * cloud, glossColor[1], gloss)
+        const blue = mix(mix(mix(nearShade[2], distantShade[2], mist), mix(nearBody[2], distantBody[2], mist), tone) * cloud, glossColor[2], gloss)
+        const alpha = row.visibility * 255
+
+        const top = Math.max(0, Math.ceil(Math.min(lastY, screenY) - .5))
+        const bottom = Math.min(fieldHeight, Math.ceil(Math.max(lastY, screenY) - .5))
+        if (top < bottom) {
+          const step = 1 / (screenY - lastY)
+          let fraction = (top + .5 - lastY) * step
+          let pixel = top * stride + column * 4
+          for (let y = top; y < bottom; y++, pixel += stride, fraction += step) {
+            pixels[pixel] = mix(lastRed, red, fraction)
+            pixels[pixel + 1] = mix(lastGreen, green, fraction)
+            pixels[pixel + 2] = mix(lastBlue, blue, fraction)
+            pixels[pixel + 3] = mix(lastAlpha, alpha, fraction)
+          }
+        }
+        lastY = screenY
+        lastRed = red
+        lastGreen = green
+        lastBlue = blue
+        lastAlpha = alpha
       }
     }
     context.putImageData(image, 0, 0)
     target.drawImage(texture, 0, 0, 1, 1)
   }
 
+  // Rain rings sample a stable middle distance in the same projected surface.
   function crestAt(x: number) {
-    const { crest } = profiles[MAIN_FOLD]
-    const position = clamp(x) * (crest.length - 2) + .5
+    if (!rainProfile.length) return .63
+    const position = clamp(x * rainProfile.length - .5, 0, rainProfile.length - 1)
     const index = Math.floor(position)
-    return mix(crest[index], crest[index + 1], position - index)
+    return mix(rainProfile[index], rainProfile[Math.min(index + 1, rainProfile.length - 1)], position - index)
   }
 
   return { render, crestAt }
