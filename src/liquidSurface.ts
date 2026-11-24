@@ -6,13 +6,23 @@ import { clamp, mix } from './material'
 
 const FILM = {
   palette: {
-    deep: '#102565', cobalt: '#1745cf', lake: '#108acb', cyan: '#75d9e9', lavender: '#a89bdf', glint: '#e4fbff',
+    deep: '#091d56', cobalt: '#184bc7', lake: '#0e82bb', cyan: '#6cd7e9', lavender: '#9b9bdb', glint: '#e6fbff',
     sky: [
       [0, '#77badb'], [.24, '#a6c2d3'], [.42, '#d4d5d9'], [.59, '#efe4d5'], [1, '#c5dfeb'],
     ],
   },
   wave: { amplitude: 1.23, wavelength: 21.5, travel: .86, twist: .93, period: 8.4 },
-  optics: { transmission: .72, refraction: .062, roughness: .36, reflection: .64, rimLight: .63, focusDepth: 9.0, focusRange: 4.9 },
+  optics: {
+    transmission: .82,
+    absorption: [1.88, .93, .17],
+    refraction: .103,
+    refractiveIndex: 1.38,
+    roughness: .24,
+    reflection: .82,
+    rimLight: .73,
+    focusDepth: 9.0,
+    focusRange: 4.9,
+  },
   quality: {
     fine: { across: 152, along: 84, width: 920, height: 545 },
     compact: { across: 96, along: 56, width: 710, height: 470 },
@@ -43,6 +53,8 @@ const FRAGMENT = `
   uniform vec2 uFrame;
   uniform vec3 uOptics;
   uniform vec4 uLight;
+  uniform vec3 uAbsorption;
+  uniform float uIor;
   uniform sampler2D uEnvironment;
   varying vec3 vSurface;
   varying vec3 vNormal;
@@ -58,56 +70,66 @@ const FRAGMENT = `
     return color;
   }
 
+  float reflectionStrip(vec3 ray, vec3 center, vec2 span, float tilt) {
+    vec3 horizontal = normalize(cross(vec3(0.0, 1.0, 0.0), center));
+    vec3 vertical = cross(center, horizontal);
+    vec2 position = vec2(dot(ray, horizontal), dot(ray, vertical));
+    // The two spans represent the long and short sides of an environment light.
+    position = vec2(position.x + tilt * position.y, position.y - tilt * position.x) / span;
+    return exp(-dot(position, position)) * smoothstep(0.18, 0.78, dot(ray, center));
+  }
+
   void main() {
     float face = gl_FrontFacing ? 1.0 : -1.0;
     vec3 n = normalize(vNormal) * face;
     vec3 eye = normalize(cameraPosition - vSurface);
     vec3 light = normalize(vec3(0.49, 0.75, 0.41));
     vec3 reflected = reflect(-eye, n);
-    vec3 halfDirection = normalize(light + eye);
     float diffuse = max(0.0, dot(n, light));
-    float gloss = max(0.0, dot(n, halfDirection));
     float facing = max(0.0, dot(n, eye));
     vec2 uv = gl_FragCoord.xy / uFrame;
     float distanceFromFocus = (length(cameraPosition - vSurface) - uLight.z) / uLight.w;
     float focus = 1.0 / (1.0 + distanceFromFocus * distanceFromFocus);
     float lower = 1.0 - smoothstep(-1.45, 1.19, vSurface.y);
-    float density = clamp(0.29 * vCavity + 0.51 * lower + 0.20 * smoothstep(-4.9, 4.2, vSurface.z), 0.0, 0.92);
-    float tone = clamp(0.23 + 0.56 * diffuse + 0.15 * facing - 0.36 * vCavity - 0.43 * lower, 0.0, 1.0);
-    vec3 blue = mix(uDeep, uCobalt, smoothstep(0.03, 0.57, tone));
-    blue = mix(blue, uLake, smoothstep(0.27, 0.84, tone));
-    vec3 base = mix(blue, uCyan, 0.48 * smoothstep(0.49, 0.96, tone));
+    float density = clamp(0.37 * vCavity + 0.52 * lower + 0.17 * smoothstep(-4.3, 4.4, vSurface.z), 0.0, 1.0);
+    float tone = clamp(0.19 + 0.62 * diffuse - 0.30 * vCavity - 0.38 * lower, 0.0, 1.0);
+    vec3 blue = mix(uDeep, uCobalt, smoothstep(0.03, 0.58, tone));
+    vec3 body = mix(blue, uLake, smoothstep(0.28, 0.86, tone));
 
-    // A broad studio reflection and a small grazing reflection use the same
-    // normal as the diffuse light. Neither is attached to a mesh boundary.
-    float roughness = uOptics.z + 0.23 * (1.0 - focus);
-    float broad = pow(gloss, mix(11.0, 3.1, roughness));
-    float core = pow(gloss, mix(47.0, 8.0, roughness));
-    float fresnel = pow(1.0 - facing, 4.0);
-    vec3 viewNormal = normalize(vViewNormal) * face;
+    float roughness = uOptics.z + 0.20 * (1.0 - focus);
+    float fresnelBase = pow((uIor - 1.0) / (uIor + 1.0), 2.0);
+    float fresnel = mix(fresnelBase, 1.0, pow(1.0 - facing, 5.0));
+    vec3 viewRay = -(mat3(viewMatrix) * eye);
+    vec3 refracted = refract(viewRay, normalize(vViewNormal) * face, 1.0 / uIor);
     vec2 units = vec2(uFrame.y / uFrame.x, 1.0);
-    vec2 shift = viewNormal.xy * uOptics.y * (1.0 + (1.0 - facing) * 0.55);
-    float blur = 0.004 + roughness * (0.019 + 0.049 * (1.0 - focus) + 0.020 * density);
+    vec2 shift = (refracted.xy - viewRay.xy) * uOptics.y * (1.5 + 0.75 * density);
+    float blur = 0.003 + roughness * (0.016 + 0.033 * (1.0 - focus) + 0.011 * density);
     vec3 environment = readEnvironment(uv + shift * units, blur * units);
-    vec3 thinFilter = mix(uCyan, vec3(1.0), 0.40);
-    vec3 thickFilter = mix(uCobalt, uLake, 0.38);
-    vec3 filterColor = mix(thinFilter, thickFilter, 0.10 + 0.86 * density);
-    vec3 transmission = environment * filterColor;
-    base = mix(base, transmission, uOptics.x * (0.56 + facing * 0.40) * (1.0 - density * 0.81));
+    // Longer optical paths absorb more warm light, revealing the deeper blue.
+    float opticalDepth = mix(0.23, 1.48, density) * (1.0 + 0.37 * (1.0 - facing));
+    vec3 transmission = environment * exp(-uAbsorption * opticalDepth);
+    float clarity = uOptics.x * mix(0.93, 0.39, density) * (1.0 - 0.42 * fresnel);
+    vec3 base = mix(body, transmission, clarity);
 
-    float reflectedSky = max(0.0, dot(reflected, normalize(vec3(0.19, 0.29, -0.94))));
-    float skyReflection = 0.33 * pow(reflectedSky, 6.0) + 0.42 * pow(reflectedSky, mix(13.0, 31.0, focus));
-    float rim = pow(fresnel, 2.9) * (0.24 + 0.76 * smoothstep(0.20, 0.87, reflectedSky));
-    float violet = 0.19 * smoothstep(0.23, 0.53, tone) * (1.0 - smoothstep(0.53, 0.81, tone))
-      * pow(max(0.0, dot(reflected, normalize(vec3(-0.59, 0.45, -0.67)))), 6.0);
-    base = mix(base, uLavender, violet);
-    base = mix(base, uCyan, 0.17 * broad + 0.04 * fresnel);
-    float specular = clamp(uLight.x * (0.37 * core + 0.51 * skyReflection)
-      + uLight.y * rim * (0.34 + 0.66 * focus), 0.0, 0.64);
+    float soft = reflectionStrip(reflected, normalize(vec3(-0.26, 0.55, -0.79)), vec2(0.87, 0.10 + 0.30 * roughness), 0.28);
+    float ribbon = reflectionStrip(reflected, normalize(vec3(0.46, 0.25, -0.85)), vec2(0.68, 0.028 + 0.13 * roughness), -0.19);
+    float shade = reflectionStrip(reflected, normalize(vec3(-0.10, 0.06, -0.99)), vec2(0.79, 0.14 + 0.16 * roughness), 0.09);
+    // The dark and bright strips share the same reflection ray and the same
+    // deformed normal, so they stretch and turn with the surface.
+    base = mix(base, mix(uDeep, uCobalt, 0.26 + 0.18 * diffuse), uLight.x * shade * (0.24 + 0.38 * fresnel));
+    float violet = 0.13 * reflectionStrip(reflected, normalize(vec3(-0.68, 0.39, -0.62)), vec2(0.34, 0.16), 0.23);
+    base = mix(base, uLavender, violet * (1.0 - shade));
+    base = mix(base, uCyan, uLight.x * soft * (0.23 + 0.19 * fresnel));
+
+    float edgeLight = reflectionStrip(reflected, normalize(vec3(0.44, -0.12, -0.89)), vec2(0.52, 0.12 + 0.14 * roughness), -0.15);
+    float rim = pow(1.0 - facing, mix(20.0, 10.0, roughness)) * (0.08 + 0.59 * edgeLight + 0.20 * ribbon + 0.13 * soft);
+    float key = pow(max(0.0, dot(n, normalize(light + eye))), mix(64.0, 20.0, roughness));
+    float specular = clamp(uLight.x * ((0.18 + 0.40 * fresnel) * ribbon + 0.16 * soft + 0.12 * key)
+      + uLight.y * rim * (0.37 + 0.63 * focus), 0.0, 0.65);
     vec2 reflectionUV = vec2(0.53 + reflected.x * 0.31, 0.66 + reflected.y * 0.23);
     vec3 reflectedEnvironment = (texture2D(uEnvironment, reflectionUV + vec2(0.06, 0.04)).rgb
       + texture2D(uEnvironment, reflectionUV - vec2(0.06, 0.04)).rgb) * 0.5;
-    vec3 glint = mix(uGlint, reflectedEnvironment, 0.22 * broad);
+    vec3 glint = mix(uGlint, reflectedEnvironment, 0.19 * soft);
     gl_FragColor = vec4(mix(base, glint, specular), 1.0);
     #include <colorspace_fragment>
   }
@@ -234,6 +256,8 @@ export function createLiquidSurface() {
     uFrame: { value: new Vector2() }, uEnvironment: { value: environmentTexture },
     uOptics: { value: new Vector3(optics.transmission, optics.refraction, optics.roughness) },
     uLight: { value: new Vector4(optics.reflection, optics.rimLight, optics.focusDepth, optics.focusRange) },
+    uAbsorption: { value: new Vector3(...optics.absorption) },
+    uIor: { value: optics.refractiveIndex },
   }
   const material = new ShaderMaterial({
     vertexShader: VERTEX, fragmentShader: FRAGMENT, uniforms, side: DoubleSide, forceSinglePass: true,
