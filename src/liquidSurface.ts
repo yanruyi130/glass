@@ -11,7 +11,7 @@ const FILM = {
       [0, '#77badb'], [.24, '#a6c2d3'], [.42, '#d4d5d9'], [.59, '#efe4d5'], [1, '#c5dfeb'],
     ],
   },
-  wave: { amplitude: 1.23, wavelength: 21.5, travel: .86, twist: .93, period: 8.4 },
+  wave: { amplitude: 1.13, wavelength: 21.5, travel: .77, twist: .86, response: 10.8 },
   fold: { neck: .43, roll: .63 },
   optics: {
     transmission: .82,
@@ -218,56 +218,81 @@ function makeSurfaceGeometry({ across, along }: Quality) {
   return { geometry, positions, normals, cavities, columns, sections, columnStencils, depthStencils, stride }
 }
 
+function flowCell(x: number, t: number) {
+  const cell = Math.imul(x ^ 0x4519, 0x9e3779b1) ^ Math.imul(t ^ 0x18cf, 0x85ebca77)
+  const mixed = Math.imul(cell ^ (cell >>> 16), 0x7feb352d)
+  return ((mixed ^ (mixed >>> 15)) >>> 0) / 0x80000000 - 1
+}
+
+function flowEase(fraction: number) {
+  return fraction * fraction * fraction * (10 + fraction * (6 * fraction - 15))
+}
+
+function flowPressure(position: number, time: number) {
+  const x = Math.floor(position)
+  const t = Math.floor(time)
+  const along = flowEase(position - x)
+  const elapsed = flowEase(time - t)
+  return mix(mix(flowCell(x, t), flowCell(x + 1, t), along),
+    mix(flowCell(x, t + 1), flowCell(x + 1, t + 1), along), elapsed)
+}
+
 function deform(surface: ReturnType<typeof makeSurfaceGeometry>, width: number, time: number) {
   const { positions, normals, cavities, columns, sections, columnStencils, depthStencils, stride } = surface
-  const { amplitude, wavelength, travel, twist, period } = FILM.wave
+  const { amplitude, wavelength, travel, twist, response } = FILM.wave
   const waveScale = (2 * Math.PI / .31) / wavelength
-  const offset = time * travel
-  const cycle = time * (2 * Math.PI / period)
+  // Integrate two slow, shallow speed variations rather than scaling time by
+  // an instantaneous speed. The resulting travel always advances to the right.
+  const offset = travel * (time + .09 * Math.sin(time * .148) / .148
+    + .055 * (Math.sin(time * .059 + 1.4) - Math.sin(1.4)) / .059)
+  const pressureTime = time / response
   for (let col = 0; col < stride; col++) {
     const x = width * columns[col]
-    const advected = (x - offset) * waveScale
+    const materialX = (x - offset) * waveScale
+    // The near edge follows the same pressure field a little later and farther
+    // along the film, so a bend draws out its neighboring area as it relaxes.
+    const leading = flowPressure(materialX * .115 + .43, pressureTime + 1.34)
+    const following = flowPressure(materialX * .115 - .21, pressureTime + 1.07)
+    const steer = flowPressure(materialX * .084 + 7.6, pressureTime * .69 + 4.23)
+    const advected = materialX + 1.72 * leading + 1.35 * steer
     const sweep = .31 * advected + 1.18
-    const bend = Math.sin(sweep + .27 * Math.sin(.58 * sweep - .7))
-    const shoulder = Math.cos(.68 * sweep + .86)
-    // Pull a small portion of the existing crest inwards as it travels.
-    const tension = (.5 + .5 * Math.cos(sweep - 1.53)) ** 5
-    const bendPhase = Math.sin(cycle - .23 * advected + .56)
+    const bend = Math.sin(sweep + .25 * Math.sin(.58 * sweep - .7) + .31 * steer)
+    const shoulder = Math.cos(.68 * sweep + .86 + .38 * following)
+    const tension = (.5 + .5 * Math.cos(sweep - 1.53 + .73 * steer)) ** 4
+      * (.66 + .34 * leading)
     const hingeY = .32 + .34 * Math.sin(.27 * advected - .37)
-    const hingeZ = -.54 + 2.84 * Math.sin(.259 * advected - .54) + .40 * bendPhase
+    const hingeZ = -.54 + 2.84 * Math.sin(.259 * advected - .54) + .51 * leading
     for (const [row, { depth, z: base, curl, returnCurve, outer, foreground }] of sections.entries()) {
-      // Distance along the sheet shifts the flex phase. Adjacent sections
-      // continue into each other as the raised edge rolls toward the viewer.
-      const flexing = Math.sin(cycle - .23 * advected + depth * 1.48)
-      const roll = twist * (1.16 * bend + .59 * flexing) * curl
+      const flexing = mix(leading, following, depth)
+      const roll = twist * (1.08 * bend + .68 * flexing) * curl
       const z = base + 1.74 * returnCurve + outer * (1.20 * bend + .63 * shoulder) + roll
       const u = advected + twist * (.91 * Math.sin(.31 * z + .72 * bend) + .54 * flexing * curl)
-      const v = z + .78 * Math.sin(.28 * u - .25 * z + .34)
-      const drawIn = (.5 + .5 * Math.cos(sweep - 1.55 - (depth - .28) * 1.75)) ** 5
-      const strain = drawIn * (.76 + .24 * flexing)
-      const axis = -2.12 + 3.27 * Math.sin(.259 * u - .52) + .56 * flexing + .91 * strain
+      const v = z + .74 * Math.sin(.28 * u - .25 * z + .34 + .34 * steer)
+      const drawIn = (.5 + .5 * Math.cos(sweep - 1.55 - (depth - .28) * 1.60 + .70 * steer)) ** 4
+      const strain = drawIn * (.62 + .38 * flexing)
+      const axis = -2.12 + 3.18 * Math.sin(.259 * u - .52 + .36 * steer) + .83 * flexing + .82 * strain
       const acrossCrest = v - axis
-      const crestWidth = (2.24 + .40 * shoulder + .38 * flexing)
+      // The same pressure lifts and narrows a bend, then lets it broaden into
+      // the valley. The falloff stays continuous across the whole surface.
+      const crestWidth = (2.61 + .41 * shoulder - .51 * flexing)
         * (1 - FILM.fold.neck * strain + .28 * strain * Math.tanh(acrossCrest * .73))
       const crest = acrossCrest / crestWidth
-      const incline = .82 * Math.sin(.248 * u - .51) + .18 * Math.sin(.512 * u + .14)
-      const height = 1.42 + 1.30 * incline + .33 * flexing
+      const incline = .85 * Math.sin(.245 * u - .51 + .42 * steer) + .15 * Math.sin(.494 * u + .14)
+      const height = 1.35 + 1.04 * incline + .55 * flexing
       const ridge = Math.exp(-crest * crest) * height
-      const trough = (v - axis - 4.45) / 2.48
-      const hollow = Math.exp(-trough * trough) * (.43 - .19 * Math.sin(.40 * u - .36 * v))
-      const basin = .62 * Math.cos(.47 * u + .34 * v + 2.71) + .30 * Math.sin(.42 * v - .36 * u)
-      const acrossBasin = (v - 3.12 - 1.18 * bend) / 3.22
-      const front = basin * (.48 + 1.57 * Math.exp(-acrossBasin * acrossBasin)) * foreground
-      // Low-contrast, continuous irregularity in the domain. It travels with
-      // the film and keeps broadened reflections from forming regular bands.
-      const ripple = .043 * Math.sin(.86 * u + .63 * v) * Math.sin(.75 * v - .18 * u + .25 * flexing)
-      const y = -.37 + amplitude * (ridge - hollow + front + ripple - .86 * (1 - incline) * outer) - 1.13 * returnCurve
+      const trough = (v - axis - 4.17 - .39 * flexing) / 2.66
+      const hollow = Math.exp(-trough * trough) * (.40 - .14 * Math.sin(.34 * u - .31 * v) + .13 * flexing)
+      const basin = .59 * Math.cos(.425 * u + .32 * v + 2.71 + .63 * following)
+        + .25 * Math.sin(.37 * v - .31 * u + .53 * steer)
+      const acrossBasin = (v - 3.12 - 1.16 * bend + .62 * flexing) / (3.39 - .47 * flexing)
+      const front = basin * (.50 + 1.44 * Math.exp(-acrossBasin * acrossBasin)) * foreground
+      const y = -.37 + amplitude * (ridge - hollow + front - .86 * (1 - incline) * outer) - 1.13 * returnCurve
 
       // The roll turns points around a local hinge. Its angle fades with
       // radius, preserving the continuous sheet through the turn.
       const dy = y - hingeY
       const dz = z - hingeZ
-      const angle = FILM.fold.roll * tension * (.84 + .16 * bendPhase) * Math.exp(-(dy * dy + dz * dz) / 4.5)
+      const angle = FILM.fold.roll * tension * (.84 + .16 * flexing) * Math.exp(-(dy * dy + dz * dz) / 4.5)
       const cos = Math.cos(angle)
       const sin = Math.sin(angle)
       positions.setXYZ(row * stride + col, x, hingeY + dy * cos - dz * sin, hingeZ + dz * cos + dy * sin)
