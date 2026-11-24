@@ -12,6 +12,7 @@ const FILM = {
     ],
   },
   wave: { amplitude: 1.23, wavelength: 21.5, travel: .86, twist: .93, period: 8.4 },
+  fold: { neck: .43, roll: .63 },
   optics: {
     transmission: .82,
     absorption: [1.88, .93, .17],
@@ -24,8 +25,8 @@ const FILM = {
     focusRange: 4.9,
   },
   quality: {
-    fine: { across: 152, along: 84, width: 920, height: 545 },
-    compact: { across: 96, along: 56, width: 710, height: 470 },
+    fine: { across: 152, along: 96, width: 920, height: 545 },
+    compact: { across: 96, along: 66, width: 710, height: 470 },
   },
 } as const
 
@@ -157,8 +158,15 @@ function makeSurfaceGeometry({ across, along }: Quality) {
   geometry.setAttribute('normal', normals)
   geometry.setAttribute('cavity', cavities)
   geometry.setIndex(new BufferAttribute(indices, 1))
+  const columns = Array.from({ length: stride }, (_, column) => {
+    const station = 2 * column / across - 1
+    // Use more columns where the foreground fills a larger part of the view.
+    return station * (.48 + .52 * station * station)
+  })
   const sections = Array.from({ length: along + 1 }, (_, row) => {
-    const depth = row / along
+    const station = row / along
+    // Reserve more rows for the far lip and the transition into the crest.
+    const depth = station * (.64 + .36 * station)
     const curl = (depth - .29) * 5.8
     return {
       depth, z: mix(-10.4, 9.2, depth), curl: 1 / (1 + curl * curl),
@@ -166,22 +174,26 @@ function makeSurfaceGeometry({ across, along }: Quality) {
       foreground: depth * depth * (3 - 2 * depth),
     }
   })
-  return { geometry, positions, cavities, sections, across, along, stride }
+  return { geometry, positions, cavities, columns, sections, along, stride }
 }
 
 function deform(surface: ReturnType<typeof makeSurfaceGeometry>, width: number, time: number) {
-  const { geometry, positions, cavities, sections, across, along, stride } = surface
+  const { geometry, positions, cavities, columns, sections, along, stride } = surface
   const { amplitude, wavelength, travel, twist, period } = FILM.wave
-  const span = width * 2
   const waveScale = (2 * Math.PI / .31) / wavelength
   const offset = time * travel
   const cycle = time * (2 * Math.PI / period)
   for (let col = 0; col < stride; col++) {
-    const x = -width + span * col / across
+    const x = width * columns[col]
     const advected = (x - offset) * waveScale
     const sweep = .31 * advected + 1.18
     const bend = Math.sin(sweep + .27 * Math.sin(.58 * sweep - .7))
     const shoulder = Math.cos(.68 * sweep + .86)
+    // Pull a small portion of the existing crest inwards as it travels.
+    const tension = (.5 + .5 * Math.cos(sweep - 1.53)) ** 5
+    const bendPhase = Math.sin(cycle - .23 * advected + .56)
+    const hingeY = .32 + .34 * Math.sin(.27 * advected - .37)
+    const hingeZ = -.54 + 2.84 * Math.sin(.259 * advected - .54) + .40 * bendPhase
     for (const [row, { depth, z: base, curl, returnCurve, outer, foreground }] of sections.entries()) {
       // Distance along the sheet shifts the flex phase. Adjacent sections
       // continue into each other as the raised edge rolls toward the viewer.
@@ -190,8 +202,13 @@ function deform(surface: ReturnType<typeof makeSurfaceGeometry>, width: number, 
       const z = base + 1.74 * returnCurve + outer * (1.20 * bend + .63 * shoulder) + roll
       const u = advected + twist * (.91 * Math.sin(.31 * z + .72 * bend) + .54 * flexing * curl)
       const v = z + .78 * Math.sin(.28 * u - .25 * z + .34)
-      const axis = -2.12 + 3.27 * Math.sin(.259 * u - .52) + .56 * flexing
-      const crest = (v - axis) / (2.24 + .40 * shoulder + .38 * flexing)
+      const drawIn = (.5 + .5 * Math.cos(sweep - 1.55 - (depth - .28) * 1.75)) ** 5
+      const strain = drawIn * (.76 + .24 * flexing)
+      const axis = -2.12 + 3.27 * Math.sin(.259 * u - .52) + .56 * flexing + .91 * strain
+      const acrossCrest = v - axis
+      const crestWidth = (2.24 + .40 * shoulder + .38 * flexing)
+        * (1 - FILM.fold.neck * strain + .28 * strain * Math.tanh(acrossCrest * .73))
+      const crest = acrossCrest / crestWidth
       const incline = .82 * Math.sin(.248 * u - .51) + .18 * Math.sin(.512 * u + .14)
       const height = 1.42 + 1.30 * incline + .33 * flexing
       const ridge = Math.exp(-crest * crest) * height
@@ -204,22 +221,37 @@ function deform(surface: ReturnType<typeof makeSurfaceGeometry>, width: number, 
       // the film and keeps broadened reflections from forming regular bands.
       const ripple = .043 * Math.sin(.86 * u + .63 * v) * Math.sin(.75 * v - .18 * u + .25 * flexing)
       const y = -.37 + amplitude * (ridge - hollow + front + ripple - .86 * (1 - incline) * outer) - 1.13 * returnCurve
-      positions.setXYZ(row * stride + col, x, y, z)
+
+      // The roll turns points around a local hinge. Its angle fades with
+      // radius, preserving the continuous sheet through the turn.
+      const dy = y - hingeY
+      const dz = z - hingeZ
+      const angle = FILM.fold.roll * tension * (.84 + .16 * bendPhase) * Math.exp(-(dy * dy + dz * dz) / 4.5)
+      const cos = Math.cos(angle)
+      const sin = Math.sin(angle)
+      positions.setXYZ(row * stride + col, x, hingeY + dy * cos - dz * sin, hingeZ + dz * cos + dy * sin)
     }
   }
 
-  const sx = across / span
-  const sz = along / (sections[along].z - sections[0].z)
   for (let row = 0; row <= along; row++) {
+    const farStation = sections[Math.max(0, row - 1)].z
+    const nearStation = sections[Math.min(along, row + 1)].z
+    const farStep = sections[row].z - farStation
+    const nearStep = nearStation - sections[row].z
+    const depthScale = farStep > 0 && nearStep > 0 ? 2 / (farStep + nearStep) : 0
     for (let col = 0; col < stride; col++) {
       const i = row * stride + col
       const y = positions.getY(i)
-      const left = positions.getY(col > 0 ? i - 1 : i)
-      const right = positions.getY(col < across ? i + 1 : i)
-      const far = positions.getY(row > 0 ? i - stride : i)
-      const near = positions.getY(row < along ? i + stride : i)
-      const curvature = (left + right - 2 * y) * sx * sx + (far + near - 2 * y) * sz * sz
-      cavities.setX(i, clamp(curvature * .72))
+      let sideCurvature = 0
+      if (col > 0 && col + 1 < stride) {
+        const leftStep = width * (columns[col] - columns[col - 1])
+        const rightStep = width * (columns[col + 1] - columns[col])
+        sideCurvature = 2 * ((positions.getY(i + 1) - y) / rightStep - (y - positions.getY(i - 1)) / leftStep) / (leftStep + rightStep)
+      }
+      const depthCurvature = depthScale > 0
+        ? depthScale * ((positions.getY(i + stride) - y) / nearStep - (y - positions.getY(i - stride)) / farStep)
+        : 0
+      cavities.setX(i, clamp((sideCurvature + depthCurvature) * .72))
     }
   }
 
