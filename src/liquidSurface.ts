@@ -11,7 +11,7 @@ const FILM = {
       [0, '#77badb'], [.24, '#a6c2d3'], [.42, '#d4d5d9'], [.59, '#efe4d5'], [1, '#c5dfeb'],
     ],
   },
-  wave: { amplitude: 1.13, wavelength: 21.5, travel: .77, twist: .86, response: 10.8 },
+  wave: { amplitude: 1.04, travel: .69, localBend: .73, disturbance: .86, span: 8.6, response: 10.4 },
   fold: { neck: .43, roll: .63 },
   optics: {
     transmission: .82,
@@ -235,71 +235,77 @@ function flowEase(fraction: number) {
   return fraction * fraction * fraction * (10 + fraction * (6 * fraction - 15))
 }
 
+function flowSpline(a: number, b: number, c: number, d: number, fraction: number) {
+  // A cubic B-spline shares neighboring cells and their derivatives across
+  // intervals. A cell boundary does not stop or restart a stretch.
+  const square = fraction * fraction
+  const cube = square * fraction
+  const remaining = 1 - fraction
+  return (a * remaining * remaining * remaining + b * (4 - 6 * square + 3 * cube)
+    + c * (1 + 3 * fraction + 3 * square - 3 * cube) + d * cube) / 6
+}
+
+function pressureRow(x: number, t: number, fraction: number) {
+  return flowSpline(flowCell(x - 1, t), flowCell(x, t), flowCell(x + 1, t), flowCell(x + 2, t), fraction)
+}
+
 function flowPressure(position: number, time: number) {
   const x = Math.floor(position)
   const t = Math.floor(time)
-  const along = flowEase(position - x)
-  const elapsed = flowEase(time - t)
-  return mix(mix(flowCell(x, t), flowCell(x + 1, t), along),
-    mix(flowCell(x, t + 1), flowCell(x + 1, t + 1), along), elapsed)
+  const along = position - x
+  const pressure = flowSpline(pressureRow(x, t - 1, along), pressureRow(x, t, along),
+    pressureRow(x, t + 1, along), pressureRow(x, t + 2, along), time - t)
+  return Math.tanh(pressure * 2.15)
 }
 
 function deform(surface: ReturnType<typeof makeSurfaceGeometry>, width: number, time: number) {
   const { positions, normals, cavities, columns, sections, columnStencils, depthStencils, stride } = surface
-  const { amplitude, wavelength, travel, twist, response } = FILM.wave
-  const waveScale = (2 * Math.PI / .31) / wavelength
+  const { amplitude, travel, localBend, disturbance, span, response } = FILM.wave
   // Integrate two slow, shallow speed variations rather than scaling time by
   // an instantaneous speed. The resulting travel always advances to the right.
-  const offset = travel * (time + .09 * Math.sin(time * .148) / .148
-    + .055 * (Math.sin(time * .059 + 1.4) - Math.sin(1.4)) / .059)
+  const offset = travel * (time + .062 * Math.sin(time * .119) / .119
+    + .041 * (Math.sin(time * .053 + 1.4) - Math.sin(1.4)) / .053)
   const pressureTime = time / response
   for (let col = 0; col < stride; col++) {
     const x = width * columns[col]
-    const materialX = (x - offset) * waveScale
-    // The near edge follows the same pressure field a little later and farther
-    // along the film, so a bend draws out its neighboring area as it relaxes.
-    const leading = flowPressure(materialX * .115 + .43, pressureTime + 1.34)
-    const following = flowPressure(materialX * .115 - .21, pressureTime + 1.07)
-    const steer = flowPressure(materialX * .084 + 7.6, pressureTime * .69 + 4.23)
-    const advected = materialX + 1.72 * leading + 1.35 * steer
-    const sweep = .31 * advected + 1.18
-    const bend = Math.sin(sweep + .25 * Math.sin(.58 * sweep - .7) + .31 * steer)
-    const shoulder = Math.cos(.68 * sweep + .86 + .38 * following)
-    const tension = (.5 + .5 * Math.cos(sweep - 1.53 + .73 * steer)) ** 4
-      * (.66 + .34 * leading)
-    const hingeY = .32 + .34 * Math.sin(.27 * advected - .37)
-    const hingeZ = -.54 + 2.84 * Math.sin(.259 * advected - .54) + .51 * leading
+    const station = (x - offset) / span
+    // Entering and trailing parts sample the same evolving field, with a
+    // short lag and a spatial offset along the direction of the pull.
+    const leading = disturbance * flowPressure(station - .96, pressureTime + 3.81)
+    const following = disturbance * flowPressure(station - 1.19, pressureTime + 3.56)
+    const guide = disturbance * flowPressure(station * .67 + 4.73, pressureTime * .64 + 3.41)
+    const ribbonPhase = 2.26 * station + .71 * guide + .55 * leading + .16
+    const drift = Math.sin(ribbonPhase + .31 * Math.sin(.62 * ribbonPhase + .59 * following))
+    const lean = .28 * Math.tanh((x - 2.5 * guide) / 5.1) + (.63 + .12 * following) * drift
+    const bend = .81 * lean + .58 * guide + .31 * leading
+    const tension = flowEase(clamp(.47 + .69 * leading + .39 * guide))
+    const hingeY = .18 + .30 * bend
+    const hingeZ = -1.10 + 2.65 * bend + .63 * following
     for (const [row, { depth, z: base, curl, returnCurve, outer, foreground }] of sections.entries()) {
-      const flexing = mix(leading, following, depth)
-      const roll = twist * (1.08 * bend + .68 * flexing) * curl
-      const z = base + 1.74 * returnCurve + outer * (1.20 * bend + .63 * shoulder) + roll
-      const u = advected + twist * (.91 * Math.sin(.31 * z + .72 * bend) + .54 * flexing * curl)
-      const v = z + .74 * Math.sin(.28 * u - .25 * z + .34 + .34 * steer)
-      const drawIn = (.5 + .5 * Math.cos(sweep - 1.55 - (depth - .28) * 1.60 + .70 * steer)) ** 4
-      const strain = drawIn * (.62 + .38 * flexing)
-      const axis = -2.12 + 3.18 * Math.sin(.259 * u - .52 + .36 * steer) + .83 * flexing + .82 * strain
-      const acrossCrest = v - axis
-      // The same pressure lifts and narrows a bend, then lets it broaden into
-      // the valley. The falloff stays continuous across the whole surface.
-      const crestWidth = (2.61 + .41 * shoulder - .51 * flexing)
-        * (1 - FILM.fold.neck * strain + .28 * strain * Math.tanh(acrossCrest * .73))
-      const crest = acrossCrest / crestWidth
-      const incline = .85 * Math.sin(.245 * u - .51 + .42 * steer) + .15 * Math.sin(.494 * u + .14)
-      const height = 1.35 + 1.04 * incline + .55 * flexing
-      const ridge = Math.exp(-crest * crest) * height
-      const trough = (v - axis - 4.17 - .39 * flexing) / 2.66
-      const hollow = Math.exp(-trough * trough) * (.40 - .14 * Math.sin(.34 * u - .31 * v) + .13 * flexing)
-      const basin = .59 * Math.cos(.425 * u + .32 * v + 2.71 + .63 * following)
-        + .25 * Math.sin(.37 * v - .31 * u + .53 * steer)
-      const acrossBasin = (v - 3.12 - 1.16 * bend + .62 * flexing) / (3.39 - .47 * flexing)
-      const front = basin * (.50 + 1.44 * Math.exp(-acrossBasin * acrossBasin)) * foreground
-      const y = -.37 + amplitude * (ridge - hollow + front - .86 * (1 - incline) * outer) - 1.13 * returnCurve
+      const pull = mix(leading, following, depth * (2 - depth))
+      const roll = localBend * (1.04 * bend + .51 * pull) * curl
+      const z = base + 1.74 * returnCurve + outer * (1.18 * bend + .38 * guide) + roll
+      const axis = -2.89 + 2.97 * bend + 1.18 * pull + .59 * tension
+      const reach = z - axis + (depth - .32) * (1.55 * guide + .71 * pull)
+      // Shape the crest as a stretched shoulder with a tighter rise and a
+      // longer release. A falling pull flattens and lengthens both slopes.
+      const neck = localBend * FILM.fold.neck * tension
+      const rise = .5 + .5 * Math.tanh((reach + 1.76) / (1.40 - neck - .31 * pull))
+      const release = .5 - .5 * Math.tanh((reach - 1.53 + .62 * pull) / (2.36 + .48 * guide - .52 * pull))
+      const lift = rise * release * (1.76 + 1.09 * lean + .70 * pull + .24 * guide)
+      const trough = (reach - 4.35 - .43 * guide) / (2.92 - .41 * pull)
+      const hollow = Math.exp(-trough * trough) * (.26 + .22 * pull)
+      const basin = .56 * following + .35 * guide - .69 * lean + .27 * Math.sin(.34 * z + 1.15 * bend)
+      const acrossBasin = (z - 2.68 - 1.43 * bend + .68 * pull) / (3.22 - .45 * pull)
+      const front = basin * (.39 + 1.30 * Math.exp(-acrossBasin * acrossBasin)) * foreground
+      const drape = (.88 * lean + .28 * guide - .65) * outer
+      const y = -.36 + amplitude * (lift - hollow + front + drape) - 1.13 * returnCurve
 
       // The roll turns points around a local hinge. Its angle fades with
       // radius, preserving the continuous sheet through the turn.
       const dy = y - hingeY
       const dz = z - hingeZ
-      const angle = FILM.fold.roll * tension * (.84 + .16 * flexing) * Math.exp(-(dy * dy + dz * dz) / 4.5)
+      const angle = localBend * FILM.fold.roll * tension * (.86 + .14 * pull) * Math.exp(-(dy * dy + dz * dz) / 4.5)
       const cos = Math.cos(angle)
       const sin = Math.sin(angle)
       positions.setXYZ(row * stride + col, x, hingeY + dy * cos - dz * sin, hingeZ + dz * cos + dy * sin)
