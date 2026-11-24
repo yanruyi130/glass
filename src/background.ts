@@ -142,7 +142,7 @@ const RAIN_LAYERS = [
 ] as const
 
 function paintRain(
-  context: CanvasRenderingContext2D, surfaceHeight: (x: number) => number, width: number, height: number,
+  context: CanvasRenderingContext2D, width: number, height: number,
   time: number, amount: number, detail: number, color: Rgb,
 ) {
   // Streaks complete their fall outside the viewport before re-entering at the opposite edge.
@@ -173,21 +173,6 @@ function paintRain(
     }
   }
   context.restore()
-
-  for (let i = 0; i < Math.round(8 * detail); i++) {
-    const { x, size, pace, phase } = PARTICLES[i + 48]
-    const cycle = wrap(phase + time * (.17 + pace * .19))
-    if (cycle >= .74) continue
-    const age = cycle / .74
-    const place = .29 + x * .66
-    const yy = (surfaceHeight(place) + .043 + size * .07) * height
-    const radius = 1.5 + (5 + size * 12) * age
-    context.strokeStyle = rgba(color, amount * .37 * smooth(age * 8) * (1 - age) ** 1.8)
-    context.lineWidth = .8
-    context.beginPath()
-    context.ellipse(place * width, yy, radius, radius * (.20 + size * .045), -.08, 0, TWO_PI)
-    context.stroke()
-  }
 }
 
 function paintSnow(
@@ -263,7 +248,7 @@ export function createBackground(canvas: HTMLCanvasElement) {
     glow(context, .98, .025, .34, [5, 16, 35], .52 * (1 - daylight))
 
     context.setTransform(canvas.width / width, 0, 0, canvas.height / height, 0, 0)
-    if (climate.rainfall > .002) paintRain(context, liquid.crestAt, width, height, time, climate.rainfall, detail, palette.foam[2])
+    if (climate.rainfall > .002) paintRain(context, width, height, time, climate.rainfall, detail, palette.foam[2])
     if (climate.snowfall > .002) paintSnow(context, width, height, time, climate.snowfall, detail, palette.foam[2])
   }
 
