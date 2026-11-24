@@ -13,6 +13,7 @@ const FILM = {
   },
   wave: { amplitude: 1.04, crestLift: 1.08, travel: 2.76, localBend: .73, disturbance: .86, span: 8.6, response: 10.4 },
   fold: { neck: .43, roll: .63 },
+  space: { depth: [-14.0, 10.8], diagonal: 4.1, stretch: 2.1, shear: 1.3 },
   optics: {
     transmission: .80,
     absorption: [3.65, 1.64, .29],
@@ -25,10 +26,10 @@ const FILM = {
     cyanReflection: .48,
     violetReflection: .10,
     rimLight: .73,
-    focusDepth: 9.0,
-    focusRange: 4.9,
+    focusDepth: 11.2,
+    focusRange: 6.4,
   },
-  focus: { near: [5.2, 7.8], far: [8.8, 13.4], strength: .76 },
+  focus: { near: [5.8, 9.6], far: [11.6, 19.5], strength: .65 },
   quality: {
     fine: { across: 152, along: 96, width: 920, height: 545 },
     compact: { across: 96, along: 66, width: 710, height: 470 },
@@ -251,11 +252,11 @@ function makeSurfaceGeometry({ across, along }: Quality) {
   })
   const sections = Array.from({ length: along + 1 }, (_, row) => {
     const station = row / along
-    // Reserve more rows for the far lip and the transition into the crest.
-    const depth = station * (.64 + .36 * station)
-    const curl = (depth - .29) * 5.8
+    // Keep enough samples in the wider middle, where the fold crosses in depth.
+    const depth = station * (.84 + .16 * station)
+    const curl = (depth - .42) * 5.8
     return {
-      depth, z: mix(-10.4, 9.2, depth), curl: 1 / (1 + curl * curl),
+      depth, z: mix(...FILM.space.depth, depth), curl: 1 / (1 + curl * curl),
       returnCurve: Math.exp(-17.2 * depth), outer: (1 - depth) ** 3,
       foreground: depth * depth * (3 - 2 * depth),
     }
@@ -307,7 +308,8 @@ function deform(surface: ReturnType<typeof makeSurfaceGeometry>, width: number, 
     + .041 * (Math.sin(time * .053 + 1.4) - Math.sin(1.4)) / .053)
   const pressureTime = time / response
   for (let col = 0; col < stride; col++) {
-    const x = width * columns[col]
+    const across = columns[col]
+    const x = width * across
     const station = (x - offset) / span
     // Entering and trailing parts sample the same evolving field, with a
     // short lag and a spatial offset along the direction of the pull.
@@ -319,14 +321,21 @@ function deform(surface: ReturnType<typeof makeSurfaceGeometry>, width: number, 
     const lean = .28 * Math.tanh((x - 2.5 * guide) / 5.1) + (.63 + .12 * following) * drift
     const bend = .81 * lean + .58 * guide + .31 * leading
     const tension = flowEase(clamp(.47 + .69 * leading + .39 * guide))
+    // The crest cuts across the sheet diagonally. Its near end and far end
+    // follow the same moving field with different amounts of pull.
+    const sweep = (FILM.space.diagonal + 1.15 * guide) * Math.tanh((x + 2.1 * guide) / 7.6)
     const hingeY = .18 + .30 * bend
-    const hingeZ = -1.10 + 2.65 * bend + .63 * following
+    const hingeZ = -1.4 + sweep + 2.05 * bend + .63 * following
     for (const [row, { depth, z: base, curl, returnCurve, outer, foreground }] of sections.entries()) {
-      const pull = mix(leading, following, depth * (2 - depth))
+      const pull = mix(leading, following, foreground)
       const roll = localBend * (1.04 * bend + .51 * pull) * curl
-      const z = base + 1.74 * returnCurve + outer * (1.18 * bend + .38 * guide) + roll
-      const axis = -2.89 + 2.97 * bend + 1.18 * pull + .59 * tension
-      const reach = z - axis + (depth - .32) * (1.55 * guide + .71 * pull)
+      const midSheet = 4 * depth * (1 - depth)
+      const stretch = FILM.space.stretch * midSheet * (pull + .36 * bend) * (depth - .37)
+      // Keep the lateral borders anchored offscreen as the middle twists.
+      const shear = FILM.space.shear * midSheet * (1 - across * across) * (.24 + .64 * bend + .41 * pull)
+      const z = base + 1.32 * returnCurve + outer * (.86 * bend + .38 * guide) + roll + stretch
+      const axis = -3.2 + sweep + 2.05 * bend + 1.05 * pull + .48 * tension
+      const reach = z - axis + (depth - .41) * (1.85 * guide + .76 * pull)
       // Shape the crest as a stretched shoulder with a tighter rise and a
       // longer release. A falling pull flattens and lengthens both slopes.
       const neck = localBend * FILM.fold.neck * tension
@@ -335,13 +344,16 @@ function deform(surface: ReturnType<typeof makeSurfaceGeometry>, width: number, 
       const crestStrength = flowEase(clamp(.64 + .45 * lean + .24 * pull))
       const lift = rise * release * (1.76 + 1.09 * lean + .70 * pull + .24 * guide
         + crestLift * (.33 + .67 * crestStrength))
-      const trough = (reach - 4.35 - .43 * guide) / (2.92 - .41 * pull)
-      const hollow = Math.exp(-trough * trough) * (.26 + .22 * pull)
-      const basin = .56 * following + .35 * guide - .69 * lean + .27 * Math.sin(.34 * z + 1.15 * bend)
-      const acrossBasin = (z - 2.68 - 1.43 * bend + .68 * pull) / (3.22 - .45 * pull)
-      const front = basin * (.39 + 1.30 * Math.exp(-acrossBasin * acrossBasin)) * foreground
-      const drape = (.88 * lean + .28 * guide - .65) * outer
-      const y = -.36 + amplitude * (lift - hollow + front + drape) - 1.13 * returnCurve
+      // The return slope widens into a shallow basin and lifts again toward
+      // the near side. Its center follows the same sweep with a gentle lag.
+      const trough = (reach - 4.45 - .68 * following) / (3.18 - .41 * pull)
+      const hollow = Math.exp(-trough * trough) * (.58 + .36 * pull + .19 * tension)
+      const returnAxis = 3.15 + .62 * sweep + 1.45 * bend - .86 * following
+      const shoulder = .5 + .5 * Math.tanh((z - returnAxis) / (2.65 + .50 * guide))
+      const crossSlope = Math.tanh((x - 2.9 * following + 2.4 * depth) / 5.6)
+      const front = shoulder * foreground * (.96 - .74 * lean + .55 * following + .34 * guide - .63 * crossSlope)
+      const drape = (.78 * lean + .40 * guide - .62) * outer
+      const y = -.36 + amplitude * (lift - hollow + front + drape) - 1.02 * returnCurve
 
       // The roll turns points around a local hinge. Its angle fades with
       // radius, preserving the continuous sheet through the turn.
@@ -350,14 +362,14 @@ function deform(surface: ReturnType<typeof makeSurfaceGeometry>, width: number, 
       const angle = localBend * FILM.fold.roll * tension * (.86 + .14 * pull) * Math.exp(-(dy * dy + dz * dz) / 4.5)
       const cos = Math.cos(angle)
       const sin = Math.sin(angle)
-      positions.setXYZ(row * stride + col, x, hingeY + dy * cos - dz * sin, hingeZ + dz * cos + dy * sin)
+      positions.setXYZ(row * stride + col, x + shear, hingeY + dy * cos - dz * sin, hingeZ + dz * cos + dy * sin)
     }
   }
 
   // Differentiate the deformed positions along the sheet's two parameters.
   // The non-uniform stencil estimates the tangent at the vertex itself and
   // gives both triangles at each diagonal the same smooth normal field.
-  const widthSquared = width * width
+  const minimumDepthTangent = .40
   const [thin, thick] = FILM.optics.sheetThickness
   for (const [row, depth] of depthStencils.entries()) {
     const rowStart = row * stride
@@ -367,12 +379,17 @@ function deform(surface: ReturnType<typeof makeSurfaceGeometry>, width: number, 
     for (let col = 0; col < stride; col++) {
       const across = columnStencils[col]
       const i = rowStart + col
+      const x = positions.getX(i)
       const y = positions.getY(i)
       const z = positions.getZ(i)
       const left = rowStart + across.previous
       const right = rowStart + across.next
       const far = farStart + col
       const near = nearStart + col
+      const dxLeft = (x - positions.getX(left)) * across.beforeRate
+      const dxRight = (positions.getX(right) - x) * across.afterRate
+      const dxFar = (x - positions.getX(far)) * depth.beforeRate
+      const dxNear = (positions.getX(near) - x) * depth.afterRate
       const dyLeft = (y - positions.getY(left)) * across.beforeRate
       const dyRight = (positions.getY(right) - y) * across.afterRate
       const dyFar = (y - positions.getY(far)) * depth.beforeRate
@@ -381,13 +398,15 @@ function deform(surface: ReturnType<typeof makeSurfaceGeometry>, width: number, 
       const dzRight = (positions.getZ(right) - z) * across.afterRate
       const dzFar = (z - positions.getZ(far)) * depth.beforeRate
       const dzNear = (positions.getZ(near) - z) * depth.afterRate
+      const dxAcross = mix(dxLeft, dxRight, across.afterWeight)
+      const dxDepth = mix(dxFar, dxNear, depth.afterWeight)
       const dyAcross = mix(dyLeft, dyRight, across.afterWeight)
       const dyDepth = mix(dyFar, dyNear, depth.afterWeight)
       const dzAcross = mix(dzLeft, dzRight, across.afterWeight)
       const dzDepth = mix(dzFar, dzNear, depth.afterWeight)
       const nx = dyDepth * dzAcross - dzDepth * dyAcross
-      const ny = width * dzDepth
-      const nz = -width * dyDepth
+      const ny = dzDepth * dxAcross - dxDepth * dzAcross
+      const nz = dxDepth * dyAcross - dyDepth * dxAcross
       const length = Math.sqrt(nx * nx + ny * ny + nz * nz)
       // The tangent cross product measures area stretch relative to the flat
       // sheet. Stretched areas carry a shallower layer of liquid.
@@ -398,16 +417,17 @@ function deform(surface: ReturnType<typeof makeSurfaceGeometry>, width: number, 
         cavities.setX(i, 0)
         continue
       }
+      const normalX = nx / length
       const normalY = ny / length
       const normalZ = nz / length
-      normals.setXYZ(i, nx / length, normalY, normalZ)
+      normals.setXYZ(i, normalX, normalY, normalZ)
 
       // Measure how the sheet bends into its own normal, rather than using
       // world height as curvature when the depth tangent turns at the fold.
-      const acrossBend = across.curvatureScale * (normalY * (dyRight - dyLeft) + normalZ * (dzRight - dzLeft))
-        / (widthSquared + dyAcross * dyAcross + dzAcross * dzAcross)
-      const depthBend = depth.curvatureScale * (normalY * (dyNear - dyFar) + normalZ * (dzNear - dzFar))
-        / Math.max(.40, dyDepth * dyDepth + dzDepth * dzDepth)
+      const acrossBend = across.curvatureScale * (normalX * (dxRight - dxLeft) + normalY * (dyRight - dyLeft) + normalZ * (dzRight - dzLeft))
+        / (dxAcross * dxAcross + dyAcross * dyAcross + dzAcross * dzAcross)
+      const depthBend = depth.curvatureScale * (normalX * (dxNear - dxFar) + normalY * (dyNear - dyFar) + normalZ * (dzNear - dzFar))
+        / Math.max(minimumDepthTangent, dxDepth * dxDepth + dyDepth * dyDepth + dzDepth * dzDepth)
       const concavity = Math.max(0, acrossBend + depthBend)
       const response = concavity * concavity
       cavities.setX(i, response / (.84 + response))
@@ -492,9 +512,9 @@ export function createLiquidSurface() {
       camera.position.set(12.9, 3.65, 4.1)
       camera.lookAt(0, .35, -.9)
     } else {
-      camera.fov = 42 + 9 * narrow
-      camera.position.set(.33, 3.03 + .31 * narrow, 8.35 + .87 * narrow)
-      camera.lookAt(0, .54, -.49)
+      camera.fov = 44 + 7 * narrow
+      camera.position.set(2.85 - 1.05 * narrow, 5.2 + .32 * narrow, 9.3 + .74 * narrow)
+      camera.lookAt(-.24, .32, -2.25)
     }
     camera.updateProjectionMatrix()
     if (import.meta.env.DEV) material.wireframe = inspection === 'wireframe'
