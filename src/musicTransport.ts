@@ -88,7 +88,7 @@ function readMusic({ context, analyser, spectrum, samples }: ReturnType<typeof c
     low: band(35, 200, .92),
     mid: band(200, 2300, 1.19),
     high: band(2300, 10400, 1.12),
-    energy: activity * musicUnit(Math.log1p(34 * rms) / Math.log1p(34 * .22)),
+    energy: activity * musicUnit(Math.log1p(34 * rms) / Math.log1p(34 * .52)),
   }
 }
 

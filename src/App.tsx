@@ -55,7 +55,7 @@ export function App() {
   const reducedMotion = useSyncExternalStore(subscribeMotion, getReducedMotion)
   const [shape, setShape] = usePreference('appearance', APPEARANCES, 'rounded-rectangle')
   const [material, setMaterial] = useState(DEFAULT_MATERIAL)
-  const [playback, setPlayback] = useState<boolean | null>(null)
+  const [backgroundPlayback, setBackgroundPlayback] = useState<boolean | null>(null)
   const [expanded, setExpanded] = useState(false)
   const [selected, setSelected] = useState<LayerId | null>(null)
   const [gap, setGap] = useState(DEFAULT_GAP)
@@ -67,7 +67,8 @@ export function App() {
   const [rainAmount, setRainAmount] = useState(1)
   const [slideSpeed, setSlideSpeed] = useState(1)
   const [frostCoverage, setFrostCoverage] = useState(loadFrostCoverage)
-  const playing = playback ?? !reducedMotion
+  const backgroundPlaying = backgroundPlayback ?? !reducedMotion
+  const backgroundAction = backgroundPlaying ? '暂停背景' : '播放背景'
   const soundscape = useSoundscape(weather)
   const [turntableMotion] = useState(() => createTurntableMotion({ rpm: TURNTABLE.record.rpm }))
 
@@ -88,7 +89,7 @@ export function App() {
 
   function resetAll() {
     setMaterial(DEFAULT_MATERIAL)
-    setPlayback(null)
+    setBackgroundPlayback(null)
     setView(false)
     setGap(DEFAULT_GAP)
     setSamples(false)
@@ -113,7 +114,7 @@ export function App() {
   return <main>
     <section className="specimen" data-weather={weather} aria-labelledby="lab-title">
       <GlassStage
-        theme={THEME} shape={shape} material={material} playing={playing} expanded={expanded} selected={selected}
+        theme={THEME} shape={shape} material={material} backgroundPlaying={backgroundPlaying} expanded={expanded} selected={selected}
         gap={gap} samples={samples} reset={reset} reducedMotion={reducedMotion}
         weather={weather} rainAmount={rainAmount} slideSpeed={slideSpeed} frostCoverage={frostCoverage / 100}
         musicBands={soundscape.bands} musicPlaying={soundscape.playing}
@@ -132,9 +133,9 @@ export function App() {
         </div>
         <div className="stage-actions">
           <div className="stage-transport">
-            <button type="button" className="stage-icon" onClick={() => setPlayback(!playing)}
-              aria-label={playing ? '暂停背景' : '播放背景'} title={playing ? '暂停背景' : '播放背景'}>
-              <ToolbarIcon name={playing ? 'pause' : 'play'} />
+            <button type="button" className="stage-icon" onClick={() => setBackgroundPlayback(!backgroundPlaying)}
+              aria-label={backgroundAction} title={backgroundAction}>
+              <ToolbarIcon name={backgroundPlaying ? 'pause' : 'play'} />
             </button>
             <button type="button" className="stage-icon" onClick={resetAll} aria-label="复位全部参数" title="复位全部参数">
               <ToolbarIcon name="reset" />

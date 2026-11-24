@@ -15,6 +15,9 @@ const DEFAULT_VIEW: ViewRotation = { pitch: 0, yaw: 0 }
 const WEATHER_MS = 2000
 const SHAPE_FADE_MS = 145
 const SCENE_FRAME_MS = 1000 / 30
+const MAX_BACKGROUND_STEP = .25
+const REDUCED_MOTION_RATE = .42
+const REDUCED_MUSIC_STRENGTH = .44
 
 interface Props {
   theme: BackgroundTheme
@@ -28,7 +31,7 @@ interface Props {
   selected: LayerId | null
   gap: number
   samples: boolean
-  playing: boolean
+  backgroundPlaying: boolean
   reducedMotion: boolean
   reset: number
   audio?: AudioInput
@@ -102,7 +105,8 @@ export function GlassStage(props: Props) {
     installRenderer()
 
     let frame = 0, width = 0, height = 0, pixelRatio = 1
-    let resized = true, dirty = true, time = 0, phase = 0, cloudTime = 0, cloudDriftTime = 0, previousTick = 0
+    let resized = true, dirty = true, time = 0, phase = 0, cloudTime = 0, cloudDriftTime = 0
+    let previousBackgroundTick: number | null = null
     let previousBackground = -Infinity, sampled = -Infinity
     let detail = navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 4 ? .76 : 1
     let load = 0
@@ -122,7 +126,18 @@ export function GlassStage(props: Props) {
 
     function wake() {
       dirty = true
-      if (!frame) frame = requestAnimationFrame(tick)
+      if (!frame && !document.hidden) frame = requestAnimationFrame(tick)
+    }
+    function visibilityChanged() {
+      previousBackgroundTick = null
+      reelTick = 0
+      if (!document.hidden) {
+        wake()
+        return
+      }
+      cancelAnimationFrame(frame)
+      frame = 0
+      window.clearTimeout(trailingSample)
     }
     function resize() {
       width = host.clientWidth
@@ -149,7 +164,7 @@ export function GlassStage(props: Props) {
     function tick(now: number) {
       frame = 0
       window.clearTimeout(trailingSample)
-      if (!width || !height) return
+      if (document.hidden || !width || !height) return
       const state = latest.current
       const fadeTarget = state.shape === shapeId ? 1 : 0
       if (fadeTo !== fadeTarget) {
@@ -185,11 +200,15 @@ export function GlassStage(props: Props) {
       if (!reelTarget && reelSpeed < .012) reelSpeed = 0
       reelAngle = (reelAngle + reelSpeed * reelElapsed) % (Math.PI * 2)
       const reelChanged = shapeId === 'cassette' && Math.abs(reelAngle - renderedReel) > .014 && now - reelFrame >= SCENE_FRAME_MS - 1
-      const elapsed = state.playing && previousTick ? (now - previousTick) / 1000 : 0
-      previousTick = state.playing ? now : 0
-      const delta = elapsed > .20 ? 0 : Math.min(elapsed, .075)
-      if (elapsed > 0 && elapsed < .12 && detail === 1) {
-        load = elapsed > .026 ? load + elapsed : Math.max(0, load - elapsed * .6)
+      const elapsed = state.backgroundPlaying && previousBackgroundTick !== null
+        ? Math.max(0, (now - previousBackgroundTick) / 1000)
+        : 0
+      previousBackgroundTick = state.backgroundPlaying ? now : null
+      // Keep advancing on slow visible frames, while bounding any one visual step.
+      const backgroundStep = Math.min(elapsed, MAX_BACKGROUND_STEP)
+      const sceneStep = backgroundStep * (state.reducedMotion ? REDUCED_MOTION_RATE : 1)
+      if (backgroundStep > 0 && detail === 1) {
+        load = elapsed > .026 ? load + backgroundStep : Math.max(0, load - backgroundStep * .6)
         if (load > 1.5) {
           detail = .78
           background.resize(width, height, pixelRatio * detail)
@@ -214,12 +233,12 @@ export function GlassStage(props: Props) {
           climate = blendClimate(climateFrom, WEATHER_PRESETS[weather], easing(amount))
         }
       }
-      time += delta
-      phase += delta * (lastSpeed + climate.flowSpeed) / 2
-      cloudTime += delta * (lastCloudSpeed + climate.cloudSpeed) / 2
-      cloudDriftTime += delta * (lastCloudDriftSpeed + climate.cloudSpeed * climate.cloudDrift) / 2
+      time += sceneStep
+      phase += sceneStep * (lastSpeed + climate.flowSpeed) / 2
+      cloudTime += sceneStep * (lastCloudSpeed + climate.cloudSpeed) / 2
+      cloudDriftTime += sceneStep * (lastCloudDriftSpeed + climate.cloudSpeed * climate.cloudDrift) / 2
       const music = state.musicBands?.current
-      const audio = musicEnvelope(delta, music && (state.musicPlaying || music.energy > 0) ? music : state.audio)
+      const audio = musicEnvelope(backgroundStep, music && (state.musicPlaying || music.energy > 0) ? music : state.audio)
 
       if (resetToken !== state.reset) {
         resetToken = state.reset
@@ -238,9 +257,15 @@ export function GlassStage(props: Props) {
       const previousOpenness = openness
       openness = mix(openFrom, openTo, easing(progress))
 
-      const backdropChanged = resized || ((state.playing || climate !== renderedClimate) && now - previousBackground >= SCENE_FRAME_MS - 1)
+      const backdropChanged = resized || ((state.backgroundPlaying || climate !== renderedClimate) && now - previousBackground >= SCENE_FRAME_MS - 1)
       if (backdropChanged) {
-        background.render({ time, phase, cloudTime, cloudDriftTime, climate, audio, detail })
+        const sceneAudio = state.reducedMotion ? {
+          low: audio.low * REDUCED_MUSIC_STRENGTH,
+          mid: audio.mid * REDUCED_MUSIC_STRENGTH,
+          high: audio.high * REDUCED_MUSIC_STRENGTH,
+          energy: audio.energy * REDUCED_MUSIC_STRENGTH,
+        } : audio
+        background.render({ time, phase, cloudTime, cloudDriftTime, climate, audio: sceneAudio, detail })
         renderedClimate = climate
         renderedTime = time
         previousBackground = now
@@ -315,7 +340,7 @@ export function GlassStage(props: Props) {
       }
       dirty = false
       resized = false
-      if (state.playing || animating || shapeAnimating || reelTarget || reelSpeed || settling || climateFrom || climate !== renderedClimate) frame = requestAnimationFrame(tick)
+      if (state.backgroundPlaying || animating || shapeAnimating || reelTarget || reelSpeed || settling || climateFrom || climate !== renderedClimate) frame = requestAnimationFrame(tick)
       else if (sampleDirty) trailingSample = window.setTimeout(wake, Math.max(0, sampled + 78 - now))
     }
 
@@ -339,6 +364,7 @@ export function GlassStage(props: Props) {
 
     const observer = new ResizeObserver(resize)
     observer.observe(host)
+    document.addEventListener('visibilitychange', visibilityChanged)
     canvas.addEventListener('webglcontextlost', lost)
     canvas.addEventListener('webglcontextrestored', restored)
     resize()
@@ -348,6 +374,7 @@ export function GlassStage(props: Props) {
       cancelAnimationFrame(frame)
       window.clearTimeout(trailingSample)
       renderer?.destroy()
+      document.removeEventListener('visibilitychange', visibilityChanged)
       canvas.removeEventListener('webglcontextlost', lost)
       canvas.removeEventListener('webglcontextrestored', restored)
     }
