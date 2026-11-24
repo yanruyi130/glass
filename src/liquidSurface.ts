@@ -256,9 +256,11 @@ function makeSurfaceGeometry({ across, along }: Quality) {
     // Keep enough samples in the wider middle, where the fold crosses in depth.
     const depth = station * (.84 + .16 * station)
     const curl = (depth - .42) * 5.8
+    const remaining = 1 - depth
+    const farSlope = flowEase(clamp(depth / .20)) * (1 - flowEase(clamp((depth - .22) / .30)))
     return {
       depth, z: mix(...FILM.space.depth, depth), curl: 1 / (1 + curl * curl),
-      returnCurve: Math.exp(-17.2 * depth), outer: (1 - depth) ** 3,
+      farTurn: remaining ** 5, farSlope, outer: remaining ** 3,
       foreground: depth * depth * (3 - 2 * depth),
     }
   })
@@ -327,16 +329,20 @@ function deform(surface: ReturnType<typeof makeSurfaceGeometry>, width: number, 
     // Parallel to camera-right in the ground plane, this depth offset keeps
     // transport across the frame from descending with the camera's pitch.
     const depthOffset = travelDepthSlope * x
+    const farAlignment = 3.4 * Math.tanh(depthOffset / 4.2)
     const sweep = (.48 * FILM.space.diagonal + .78 * guide) * Math.sin(.49 * ribbonPhase + .74 * guide)
     const hingeY = .18 + .30 * centerBend
     const hingeZ = -1.4 + depthOffset + sweep + 2.05 * centerBend + .63 * following
-    for (const [row, { depth, z: base, curl, returnCurve, outer, foreground }] of sections.entries()) {
+    for (const [row, { depth, z: base, curl, farTurn, farSlope, outer, foreground }] of sections.entries()) {
       const pull = mix(leading, following, foreground)
       // A travelling phase varies across the surface as well as down it.
       // Curves along depth stretch and turn through the same connected field.
       const laneDepth = depth - depthOffset / depthSpan
       const phase = ribbonPhase + (laneDepth - .42) * (FILM.space.depthPhase + .64 * guide)
       const drift = Math.sin(phase + .31 * Math.sin(.62 * phase + .59 * pull))
+      // The far return shares the travelling phase with a small lag. Fade
+      // its turn across several rows so it joins the interior of the sheet.
+      const farWave = .80 * Math.sin(phase - .65 + .36 * following) + .42 * pull
       const lean = bank + driftRange * drift
       const bend = .81 * lean + .58 * guide + .31 * pull
       const roll = localBend * (1.04 * bend + .51 * pull) * curl
@@ -344,7 +350,8 @@ function deform(surface: ReturnType<typeof makeSurfaceGeometry>, width: number, 
       const stretch = FILM.space.stretch * midSheet * (pull + .36 * bend) * (depth - .37)
       // Keep the lateral borders anchored offscreen as the middle twists.
       const shear = FILM.space.shear * midSheet * (1 - across * across) * (.24 + .64 * bend + .41 * pull)
-      const z = base + 1.32 * returnCurve + outer * (.86 * bend + .38 * guide) + roll + stretch
+      const farDepth = farTurn * (.54 + farAlignment + .86 * farWave) + farSlope * (.48 * farAlignment + .92 * farWave)
+      const z = base + farDepth + outer * (.48 * bend + .26 * guide) + roll + stretch
       const axis = -3.2 + depthOffset + sweep + 2.05 * bend + 1.05 * pull + .48 * tension
       const reach = z - axis + (laneDepth - .41) * (1.85 * guide + .76 * pull)
       // Shape the crest as a stretched shoulder with a tighter rise and a
@@ -367,10 +374,9 @@ function deform(surface: ReturnType<typeof makeSurfaceGeometry>, width: number, 
       // joins the shelf and basin without adding another crest or boundary.
       const alongSlope = Math.tanh((z - depthOffset - .70 - .42 * sweep + .60 * pull) / 3.9)
       const saddle = FILM.space.saddle * midSheet * alongSlope * crossSlope
-      // Carry the advected deformation into the far turn, where the central
-      // crest and saddle envelopes no longer contribute much motion.
-      const drape = (.61 * lean + .33 * guide + .72 * pull - .62) * outer
-      const y = -.36 + amplitude * (lift - hollow + front + saddle + drape) - 1.02 * returnCurve
+      const drape = (.61 * lean + .33 * guide + .60 * pull - .62) * outer
+      const farHeight = farTurn * (1.55 * farWave - 1.02) + farSlope * 1.08 * farWave
+      const y = -.36 + amplitude * (lift - hollow + front + saddle + drape) + farHeight
 
       // The roll turns points around a local hinge. Its angle fades with
       // radius, preserving the continuous sheet through the turn.
