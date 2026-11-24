@@ -11,7 +11,7 @@ const FILM = {
       [0, '#77badb'], [.24, '#a6c2d3'], [.42, '#d4d5d9'], [.59, '#efe4d5'], [1, '#c5dfeb'],
     ],
   },
-  wave: { amplitude: 1.04, travel: .69, localBend: .73, disturbance: .86, span: 8.6, response: 10.4 },
+  wave: { amplitude: 1.04, crestLift: 1.08, travel: .69, localBend: .73, disturbance: .86, span: 8.6, response: 10.4 },
   fold: { neck: .43, roll: .63 },
   optics: {
     transmission: .82,
@@ -260,7 +260,7 @@ function flowPressure(position: number, time: number) {
 
 function deform(surface: ReturnType<typeof makeSurfaceGeometry>, width: number, time: number) {
   const { positions, normals, cavities, columns, sections, columnStencils, depthStencils, stride } = surface
-  const { amplitude, travel, localBend, disturbance, span, response } = FILM.wave
+  const { amplitude, crestLift, travel, localBend, disturbance, span, response } = FILM.wave
   // Integrate two slow, shallow speed variations rather than scaling time by
   // an instantaneous speed. The resulting travel always advances to the right.
   const offset = travel * (time + .062 * Math.sin(time * .119) / .119
@@ -292,7 +292,9 @@ function deform(surface: ReturnType<typeof makeSurfaceGeometry>, width: number, 
       const neck = localBend * FILM.fold.neck * tension
       const rise = .5 + .5 * Math.tanh((reach + 1.76) / (1.40 - neck - .31 * pull))
       const release = .5 - .5 * Math.tanh((reach - 1.53 + .62 * pull) / (2.36 + .48 * guide - .52 * pull))
-      const lift = rise * release * (1.76 + 1.09 * lean + .70 * pull + .24 * guide)
+      const crestStrength = flowEase(clamp(.64 + .45 * lean + .24 * pull))
+      const lift = rise * release * (1.76 + 1.09 * lean + .70 * pull + .24 * guide
+        + crestLift * (.33 + .67 * crestStrength))
       const trough = (reach - 4.35 - .43 * guide) / (2.92 - .41 * pull)
       const hollow = Math.exp(-trough * trough) * (.26 + .22 * pull)
       const basin = .56 * following + .35 * guide - .69 * lean + .27 * Math.sin(.34 * z + 1.15 * bend)
