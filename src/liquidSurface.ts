@@ -55,6 +55,9 @@ const VERTEX = `
   }
 `
 
+// Palette weighting and pixel dithering adapted from Glasswork by Kubai087.
+// https://github.com/kubai087/glasswork/blob/4f0b6744b898b3a9b98fbd913ab24fdb83c53162/wallpapers.js#L29-L84
+// MIT license in public/licenses/glasswork-MIT.txt.
 const FRAGMENT = `
   uniform vec3 uDeep, uCobalt, uLake, uCyan, uLavender, uGlint;
   uniform vec2 uFrame;
@@ -68,6 +71,19 @@ const FRAGMENT = `
   varying vec3 vViewNormal;
   varying float vCavity;
   varying float vThickness;
+
+  float pixelHash(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+  }
+
+  vec3 bodyTint(float tone) {
+    // Blend along the existing optical tone, which follows the deformed normal.
+    vec3 distances = abs(vec3(clamp(tone, 0.0, 1.0)) - vec3(0.03, 0.49, 0.88));
+    vec3 weights = 1.0 / (pow(distances, vec3(2.4)) + 0.015);
+    return (uDeep * weights.x + uCobalt * weights.y + uLake * weights.z) / dot(weights, vec3(1.0));
+  }
 
   vec3 readEnvironment(vec2 center, vec2 radius) {
     vec3 color = texture2D(uEnvironment, center).rgb * 0.36;
@@ -122,9 +138,7 @@ const FRAGMENT = `
     float distanceFromFocus = (length(vViewPosition) - uLight.z) / uLight.w;
     float focus = 1.0 / (1.0 + distanceFromFocus * distanceFromFocus);
     float cavity = vCavity * mix(0.42, 1.0, interior);
-    float tone = diffuse - 0.16 * cavity;
-    vec3 blue = mix(uDeep, uCobalt, smoothstep(0.0, 0.58, tone));
-    vec3 body = mix(blue, uLake, smoothstep(0.40, 0.94, tone));
+    vec3 body = bodyTint(diffuse - 0.16 * cavity);
 
     float roughness = uOptics.z + 0.20 * (1.0 - focus);
     float fresnelBase = pow((uIor - 1.0) / (uIor + 1.0), 2.0);
@@ -171,6 +185,9 @@ const FRAGMENT = `
     vec3 glint = mix(mix(uCyan, uGlint, mix(0.82, 0.17, interior)), reflectedEnvironment, 0.12 * soft);
     gl_FragColor = vec4(mix(base, glint, specular), 1.0);
     #include <colorspace_fragment>
+    // Break up 8-bit gradient steps in output space without animated grain.
+    float dither = (pixelHash(gl_FragCoord.xy) - 0.5) / 128.0;
+    gl_FragColor.rgb = clamp(gl_FragColor.rgb + dither, 0.0, 1.0);
   }
 `
 
