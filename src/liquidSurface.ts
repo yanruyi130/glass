@@ -109,13 +109,16 @@ const FRAGMENT = `
     vec3 rayDy = dFdy(reflected);
     float facing = clamp(abs(dot(normal, eye)), 0.0, 1.0);
     float faceWeight = smoothstep(0.0, 0.16, facing);
-    float diffuse = mix(0.22, max(0.0, dot(n, light)), faceWeight);
+    float interior = smoothstep(0.045, 0.31, facing);
+    float edgeDiffuse = 0.20 + 0.42 * abs(dot(normal, light));
+    float diffuse = mix(edgeDiffuse, max(0.0, dot(n, light)), faceWeight);
     vec2 uv = gl_FragCoord.xy / uFrame;
     float distanceFromFocus = (length(vViewPosition) - uLight.z) / uLight.w;
     float focus = 1.0 / (1.0 + distanceFromFocus * distanceFromFocus);
     float lower = 1.0 - smoothstep(-1.45, 1.19, vSurfaceYZ.x);
-    float density = clamp(0.37 * vCavity + 0.52 * lower + 0.17 * smoothstep(-4.3, 4.4, vSurfaceYZ.y), 0.0, 1.0);
-    float tone = clamp(0.13 + 0.71 * diffuse - 0.24 * vCavity - 0.29 * lower, 0.0, 1.0);
+    float cavity = vCavity * mix(0.42, 1.0, interior);
+    float density = clamp(0.37 * cavity + 0.52 * lower + 0.17 * smoothstep(-4.3, 4.4, vSurfaceYZ.y), 0.0, 1.0);
+    float tone = clamp(0.13 + 0.71 * diffuse - 0.24 * cavity - 0.29 * lower, 0.0, 1.0);
     vec3 blue = mix(uDeep, uCobalt, smoothstep(0.03, 0.58, tone));
     vec3 body = mix(blue, uLake, smoothstep(0.28, 0.86, tone));
 
@@ -124,15 +127,15 @@ const FRAGMENT = `
     float fresnel = mix(fresnelBase, 1.0, pow(1.0 - facing, 5.0));
     vec3 refracted = refract(-eye, n, 1.0 / uIor);
     vec2 units = vec2(uFrame.y / uFrame.x, 1.0);
-    // Fade the screen-space offset near a tangent, where the sheet can turn
-    // from its front to its back and reflection is strongest.
-    vec2 shift = (refracted.xy + eye.xy) * uOptics.y * (1.5 + 0.75 * density) * faceWeight;
-    float blur = 0.003 + roughness * (0.016 + 0.033 * (1.0 - focus) + 0.011 * density);
+    // Keep the foreground sample aligned at a tangent. Refraction and its
+    // filter radius open together on the smoothly turning visible surface.
+    vec2 shift = (refracted.xy + eye.xy) * uOptics.y * (1.5 + 0.75 * density) * interior;
+    float blur = 0.003 + interior * roughness * (0.016 + 0.033 * (1.0 - focus) + 0.011 * density);
     vec3 environment = readEnvironment(uv + shift * units, blur * units);
     // Longer optical paths absorb more warm light, revealing the deeper blue.
-    float opticalDepth = mix(0.23, 1.48, density) * (1.0 + 0.37 * (1.0 - facing));
+    float opticalDepth = mix(0.23, 1.48, density) * (1.0 + 0.25 * (1.0 - facing));
     vec3 transmission = environment * exp(-uAbsorption * opticalDepth);
-    float clarity = uOptics.x * mix(0.93, 0.39, density) * (1.0 - 0.42 * fresnel);
+    float clarity = uOptics.x * mix(0.93, 0.39, density) * (1.0 - 0.19 * fresnel);
     vec3 base = mix(body, transmission, clarity);
 
     float soft = reflectionStrip(reflected, rayDx, rayDy, normalize(vec3(-0.26, 0.55, -0.79)), vec2(0.87, 0.10 + 0.30 * roughness), 0.28);
@@ -140,7 +143,7 @@ const FRAGMENT = `
     float shade = reflectionStrip(reflected, rayDx, rayDy, normalize(vec3(-0.10, 0.06, -0.99)), vec2(0.79, 0.14 + 0.16 * roughness), 0.09);
     // The dark and bright strips share the same reflection ray and the same
     // deformed normal, so they stretch and turn with the surface.
-    base = mix(base, mix(uDeep, uCobalt, 0.26 + 0.18 * diffuse), uLight.x * shade * (0.24 + 0.38 * fresnel));
+    base = mix(base, mix(uDeep, uCobalt, 0.26 + 0.18 * diffuse), interior * uLight.x * shade * (0.24 + 0.38 * fresnel));
     float violet = 0.13 * reflectionStrip(reflected, rayDx, rayDy, normalize(vec3(-0.68, 0.39, -0.62)), vec2(0.34, 0.16), 0.23);
     base = mix(base, uLavender, violet * (1.0 - shade));
     base = mix(base, uCyan, uLight.x * soft * (0.23 + 0.19 * fresnel));
@@ -148,8 +151,12 @@ const FRAGMENT = `
     float edgeLight = reflectionStrip(reflected, rayDx, rayDy, normalize(vec3(0.44, -0.12, -0.89)), vec2(0.52, 0.12 + 0.14 * roughness), -0.15);
     float rim = filteredRim(facing, mix(20.0, 10.0, roughness)) * (0.08 + 0.59 * edgeLight + 0.20 * ribbon + 0.13 * soft);
     float key = faceWeight * pow(max(0.0, dot(n, normalize(light + eye))), mix(64.0, 20.0, roughness));
-    float specular = clamp(uLight.x * ((0.18 + 0.40 * fresnel) * ribbon + 0.16 * soft + 0.12 * key)
-      + uLight.y * rim * (0.37 + 0.63 * focus), 0.0, 0.65);
+    // Hand over the narrow reflection to the grazing rim on the same film.
+    // A shared lobe avoids adding two creases around the turning point.
+    float broadGlint = uLight.x * (0.16 * soft + 0.12 * key);
+    float ribbonGlint = uLight.x * (0.18 + 0.28 * fresnel) * ribbon;
+    float edgeGlint = uLight.y * rim * (0.37 + 0.63 * focus);
+    float specular = clamp(broadGlint + mix(edgeGlint, ribbonGlint, interior), 0.0, 0.65);
     vec2 reflectionUV = vec2(0.53 + reflected.x * 0.31, 0.66 + reflected.y * 0.23);
     vec3 reflectedEnvironment = (texture2D(uEnvironment, reflectionUV + vec2(0.06, 0.04)).rgb
       + texture2D(uEnvironment, reflectionUV - vec2(0.06, 0.04)).rgb) * 0.5;
@@ -302,7 +309,7 @@ function deform(surface: ReturnType<typeof makeSurfaceGeometry>, width: number, 
   // Differentiate the deformed positions along the sheet's two parameters.
   // The non-uniform stencil estimates the tangent at the vertex itself and
   // gives both triangles at each diagonal the same smooth normal field.
-  const inverseWidthSquared = 1 / (width * width)
+  const widthSquared = width * width
   for (const [row, depth] of depthStencils.entries()) {
     const rowStart = row * stride
     const farStart = depth.previous * stride
@@ -320,22 +327,36 @@ function deform(surface: ReturnType<typeof makeSurfaceGeometry>, width: number, 
       const dyRight = (positions.getY(right) - y) * across.afterRate
       const dyFar = (y - positions.getY(far)) * depth.beforeRate
       const dyNear = (positions.getY(near) - y) * depth.afterRate
+      const dzLeft = (z - positions.getZ(left)) * across.beforeRate
+      const dzRight = (positions.getZ(right) - z) * across.afterRate
+      const dzFar = (z - positions.getZ(far)) * depth.beforeRate
+      const dzNear = (positions.getZ(near) - z) * depth.afterRate
       const dyAcross = mix(dyLeft, dyRight, across.afterWeight)
       const dyDepth = mix(dyFar, dyNear, depth.afterWeight)
-      const dzAcross = mix((z - positions.getZ(left)) * across.beforeRate,
-        (positions.getZ(right) - z) * across.afterRate, across.afterWeight)
-      const dzDepth = mix((z - positions.getZ(far)) * depth.beforeRate,
-        (positions.getZ(near) - z) * depth.afterRate, depth.afterWeight)
+      const dzAcross = mix(dzLeft, dzRight, across.afterWeight)
+      const dzDepth = mix(dzFar, dzNear, depth.afterWeight)
       const nx = dyDepth * dzAcross - dzDepth * dyAcross
       const ny = width * dzDepth
       const nz = -width * dyDepth
       const length = Math.sqrt(nx * nx + ny * ny + nz * nz)
-      if (length > 1e-8) normals.setXYZ(i, nx / length, ny / length, nz / length)
-      else normals.setXYZ(i, 0, 1, 0)
+      if (length <= 1e-8) {
+        normals.setXYZ(i, 0, 1, 0)
+        cavities.setX(i, 0)
+        continue
+      }
+      const normalY = ny / length
+      const normalZ = nz / length
+      normals.setXYZ(i, nx / length, normalY, normalZ)
 
-      const curvature = across.curvatureScale * (dyRight - dyLeft) * inverseWidthSquared
-        + depth.curvatureScale * (dyNear - dyFar)
-      cavities.setX(i, clamp(curvature * .72))
+      // Measure how the sheet bends into its own normal, rather than using
+      // world height as curvature when the depth tangent turns at the fold.
+      const acrossBend = across.curvatureScale * (normalY * (dyRight - dyLeft) + normalZ * (dzRight - dzLeft))
+        / (widthSquared + dyAcross * dyAcross + dzAcross * dzAcross)
+      const depthBend = depth.curvatureScale * (normalY * (dyNear - dyFar) + normalZ * (dzNear - dzFar))
+        / Math.max(.40, dyDepth * dyDepth + dzDepth * dzDepth)
+      const concavity = Math.max(0, acrossBend + depthBend)
+      const response = concavity * concavity
+      cavities.setX(i, response / (.84 + response))
     }
   }
 
