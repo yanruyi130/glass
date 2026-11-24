@@ -37,8 +37,8 @@ function palette(colors: Record<ColorBand, string>): Palette {
 export const WEATHER_PRESETS: Record<WeatherId, Climate> = {
   sunny: {
     flowSpeed: .95, waveAmplitude: 1, sunlight: 1, cloudCover: 0, cloudSpeed: 1, cloudDrift: 0, rainfall: 0, snowfall: 0,
-    surfaceRain: 0, frost: 0, rimLight: .95, rimTint: [1, .961, .895],
-    glass: { tint: .038, tintColor: [.99, .994, 1], saturation: 1, brightness: 1, blurScale: .65, shadowScale: .52 },
+    surfaceRain: 0, frost: 0, rimLight: .84, rimTint: [1, .980, .939],
+    glass: { tint: .023, tintColor: [.995, .998, 1], saturation: 1, brightness: 1, blurScale: .46, shadowScale: .41 },
     palette: palette({
       sky: '238CDC 4FB7F1 8AD6F9 B9EAFB',
       distant: '419EDC 71C7EC 83D5F2 75CBEC',

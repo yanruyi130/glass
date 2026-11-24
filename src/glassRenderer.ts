@@ -1,6 +1,6 @@
 /* WebGL blur, signed-distance lens and dispersion adapted from Glasswork by
  * Kubai087 (MIT). See public/licenses/glasswork-MIT.txt. */
-import { CanvasTexture, DataTexture, ExtrudeGeometry, Group, LinearFilter, LinearMipmapLinearFilter, Matrix4, Mesh, MeshBasicMaterial, PlaneGeometry, Scene, ShaderMaterial, Shape, Vector2, Vector3, Vector4, WebGLRenderer } from 'three'
+import { CanvasTexture, DataTexture, ExtrudeGeometry, Group, LinearFilter, LinearMipmapLinearFilter, Matrix4, Mesh, MeshBasicMaterial, PlaneGeometry, Quaternion, Scene, ShaderMaterial, Shape, Vector2, Vector3, Vector4, WebGLRenderer } from 'three'
 import type { Climate } from './climate'
 import { paintDeviceInk } from './deviceInk'
 import { createFrostPattern } from './frostPattern'
@@ -44,7 +44,8 @@ precision highp float;
 varying vec2 v_local;
 uniform sampler2D u_background, u_ink, u_surface;
 uniform float u_radius, u_open, u_weight, u_emphasis, u_aa;
-uniform float u_inkBrightness, u_device;
+uniform float u_inkBrightness, u_device, u_daylight;
+uniform vec2 u_dayRim;
 uniform float u_weatherRim;
 uniform int u_layer;
 uniform vec2 u_view, u_half;
@@ -136,7 +137,7 @@ void main() {
         if (amount > 0.015) {
           vec2 shift = -normal * amount;
           vec3 bent = blurred(screenPoint(p + shift), u_tone.x);
-          float split = u_lens.w;
+          float split = u_lens.w * mix(1.0, 0.34, u_daylight);
           if (split > 0.001 && amount > 0.75) {
             bent.r = blurred(screenPoint(p + shift * (1.0 + split)), u_tone.x).r;
             bent.b = blurred(screenPoint(p + shift * (1.0 - split)), u_tone.x).b;
@@ -150,13 +151,15 @@ void main() {
       alpha = inside * u_style.y;
     } else if (u_layer == 4) {
       if (depth < 13.0 && inside > 0.0) {
-        float facing = dot(outward(p), normalize(vec2(-0.75, -1.0)));
+        vec2 keyDirection = mix(vec2(-0.75, -1.0), u_dayRim, u_daylight);
+        float facing = dot(outward(p), keyDirection / max(0.001, length(keyDirection)));
         float upper = pow(max(0.0, facing), 1.6);
         float lower = pow(max(0.0, -facing), 2.0);
         float catchLight = band(depth, 0.86, 0.8) * (0.11 + 0.68 * upper + 0.25 * lower);
         float bevel = band(depth, 4.0, 2.2) * (0.018 + 0.135 * upper + 0.037 * lower);
         float insideGlint = band(depth, 8.0, 2.8) * 0.035 * upper;
-        vec3 baseLight = mix(vec3(0.67, 0.84, 1.0), vec3(1.0, 0.984, 0.925), 0.26 + upper * 0.64);
+        vec3 bounce = mix(vec3(0.67, 0.84, 1.0), vec3(0.87, 0.92, 0.95), u_daylight);
+        vec3 baseLight = mix(bounce, vec3(1.0, 0.984, 0.925), 0.26 + upper * 0.64);
         color = mix(baseLight, u_weatherLight, 0.30 + upper * 0.16);
         alpha = inside * (catchLight + bevel + insideGlint) * u_style.z * u_weatherRim;
       }
@@ -253,7 +256,7 @@ void main() {
 const edgeFragment = `
 uniform sampler2D u_background;
 uniform vec2 u_pixels;
-uniform float u_opacity, u_light;
+uniform float u_opacity, u_light, u_daylight;
 uniform vec3 u_lightColor;
 varying vec3 v_normal;
 varying float v_depth;
@@ -262,11 +265,13 @@ void main() {
   vec2 uv = vec2(gl_FragCoord.x, u_pixels.y - gl_FragCoord.y) / u_pixels;
   vec2 shift = vec2(normal.x, -normal.y) * (3.0 + 3.0 * v_depth) / u_pixels;
   vec3 transmission = texture2D(u_background, clamp(uv - shift, 0.0, 1.0)).rgb;
-  float key = max(0.0, dot(normal, normalize(vec3(-0.5, 0.75, 0.65))));
+  vec3 sun = normalize(mix(vec3(-0.5, 0.75, 0.65), vec3(0.67, 0.94, 0.65), u_daylight));
+  float key = max(0.0, dot(normal, sun));
   float glint = (0.10 + 0.33 * key) * u_light;
-  vec3 rimColor = mix(vec3(0.74, 0.91, 1.0), u_lightColor, 0.36);
-  vec3 color = mix(transmission * (0.80 + 0.16 * v_depth), rimColor, clamp(glint, 0.0, 0.72));
-  float alpha = u_opacity * (0.50 + 0.28 * key);
+  vec3 rimColor = mix(vec3(0.74, 0.91, 1.0), u_lightColor, mix(0.36, 0.86, u_daylight));
+  float transmissionGain = mix(0.80 + 0.16 * v_depth, 0.92 + 0.07 * v_depth, u_daylight);
+  vec3 color = mix(transmission * transmissionGain, rimColor, clamp(glint, 0.0, 0.72));
+  float alpha = u_opacity * (0.50 + 0.28 * key) * (1.0 - 0.16 * u_daylight);
   gl_FragColor = vec4(color * alpha, alpha);
 }`
 
@@ -333,7 +338,7 @@ export function createGlassRenderer(canvas: HTMLCanvasElement) {
     u_view: { value: new Vector2() }, u_half: { value: new Vector2() }, u_tone: { value: new Vector3() },
     u_lens: { value: new Vector4() }, u_style: { value: new Vector3() }, u_tintColor: { value: new Vector3() },
     u_radius: { value: 0 }, u_open: { value: 0 }, u_aa: { value: 0 }, u_inkBrightness: { value: 0 },
-    u_device: { value: 0 },
+    u_device: { value: 0 }, u_daylight: { value: 0 }, u_dayRim: { value: new Vector2(.67, -.94) },
     u_weatherLight: { value: new Vector3(1, 1, 1) }, u_weatherRim: { value: 1 },
     u_weatherRain: { value: 0 }, u_weatherFrost: { value: 0 },
     u_frostPattern: frostTexture, u_frostCoverage: { value: 0 },
@@ -359,12 +364,14 @@ export function createGlassRenderer(canvas: HTMLCanvasElement) {
   const weatherLayer = createLayer(7, 4.5)
   const allPlanes = [...layers, surfaceLayer, weatherLayer]
   const viewProjection = new Matrix4()
+  const inverseOrientation = new Quaternion()
+  const localSun = new Vector3()
 
   const face = new MeshBasicMaterial({ visible: false })
   const edgeUniforms = {
     u_background: backgroundTexture.uniform, u_pixels: { value: new Vector2() },
     u_opacity: { value: 1 }, u_light: { value: 1 },
-    u_lightColor: common.u_weatherLight,
+    u_lightColor: common.u_weatherLight, u_daylight: common.u_daylight,
   }
   const side = new ShaderMaterial({ ...compositing, uniforms: edgeUniforms, vertexShader: edgeVertex, fragmentShader: edgeFragment })
   let edge: Mesh<ExtrudeGeometry, [MeshBasicMaterial, ShaderMaterial]> | null = null
@@ -433,6 +440,9 @@ export function createGlassRenderer(canvas: HTMLCanvasElement) {
       common.u_inkBrightness.value = frame.inkBrightness
       common.u_weatherLight.value.set(...climate.rimTint)
       common.u_weatherRim.value = climate.rimLight
+      common.u_daylight.value = climate.sunlight
+      localSun.set(.67, .94, .65).applyQuaternion(inverseOrientation.copy(orientation).invert())
+      common.u_dayRim.value.set(localSun.x, -localSun.y)
       if (frame.rainField) prepareRain(frame.rainField)
       common.u_weatherRain.value = frame.rainField ? climate.surfaceRain * Math.min(1, frame.rainAmount) : 0
       const snowVisible = climate.frost > .002 && frame.frostCoverage > 0
