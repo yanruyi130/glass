@@ -1,0 +1,30 @@
+.ambience-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: center;
+  gap: 4px 16px;
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--inspector-line);
+}
+
+.ambience-controls__main { min-width: 0; }
+
+.ambience-controls .ambience-controls__switch {
+  display: flex;
+  min-height: 44px;
+  margin: 0;
+}
+
+.ambience-controls__status {
+  display: block;
+  margin: -5px 0 5px;
+  color: var(--inspector-muted);
+  font-size: 11px;
+}
+
+.ambience-controls .inspector-range input { height: 28px; }
+
+@media (max-width: 540px) {
+  .ambience-controls { grid-template-columns: 1fr; }
+}

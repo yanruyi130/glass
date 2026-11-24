@@ -1,3 +1,4 @@
+import { AmbienceControls, type AmbienceControlsProps } from './AmbienceControls'
 import { GLASS_SHAPES, type ShapeId } from './shape'
 import type { EffectiveMaterial, InkReading, LayerId, Material } from './material'
 import { parkedTonearmTip, TURNTABLE } from './turntableLayout'
@@ -90,6 +91,7 @@ const layers: {
 ]
 
 type PanelProps = {
+  ambience: AmbienceControlsProps
   shape: ShapeId
   onShape: (shape: ShapeId) => void
   expanded: boolean
@@ -138,7 +140,7 @@ function RangeControl({ label, display, value, min, max, step, onChange }: {
 }
 
 export function MaterialPanel({
-  shape, onShape, expanded, selected, gap, material, effective, ink, samples, rain, frost,
+  ambience, shape, onShape, expanded, selected, gap, material, effective, ink, samples, rain, frost,
   onExpanded, onSelect, onGap, onParameter, onSamples,
 }: PanelProps) {
   const current = layers.find((layer) => layer.id === selected)
@@ -257,6 +259,7 @@ export function MaterialPanel({
                 min={0} max={60} step={1} onChange={frost.onCoverage}
               />
             </div>}
+            <AmbienceControls {...ambience} />
             <label className="inspector__sampling">
               <input type="checkbox" role="switch" checked={samples} onChange={(event) => onSamples(event.currentTarget.checked)} />
               <span className="inspector__switch" aria-hidden="true" />

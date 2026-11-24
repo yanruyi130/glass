@@ -6,6 +6,7 @@ import { TurntableDeck } from './TurntableDeck'
 import { TURNTABLE } from './turntableLayout'
 import { createTurntableMotion } from './turntableMotion'
 import { useSoundscape } from './audio'
+import { useWeatherAmbience } from './useWeatherAmbience'
 import { usePreference } from './preferences'
 import { DEFAULT_WEATHER, WEATHER_PRESETS, type WeatherId } from './climate'
 import { DEFAULT_GAP, DEFAULT_MATERIAL, INITIAL_INK_READING, effectiveMaterial, type InkReading, type LayerId, type Material } from './material'
@@ -70,6 +71,14 @@ export function App() {
   const backgroundPlaying = backgroundPlayback ?? !reducedMotion
   const backgroundAction = backgroundPlaying ? '暂停背景' : '播放背景'
   const soundscape = useSoundscape(weather)
+  const ambience = useWeatherAmbience(weather, soundscape.playing && soundscape.musicVolume > 0)
+  const player = {
+    ...soundscape,
+    togglePlay() {
+      if (!soundscape.requested) ambience.activateForMusic()
+      soundscape.togglePlay()
+    },
+  }
   const [turntableMotion] = useState(() => createTurntableMotion({ rpm: TURNTABLE.record.rpm }))
 
   function setView(value: boolean) {
@@ -119,8 +128,8 @@ export function App() {
         weather={weather} rainAmount={rainAmount} slideSpeed={slideSpeed} frostCoverage={frostCoverage / 100}
         musicBands={soundscape.bands} musicPlaying={soundscape.playing}
         renderPlayer={appearance => appearance === 'turntable'
-          ? <TurntableDeck player={soundscape} motion={turntableMotion} reducedMotion={reducedMotion} />
-          : <PlayerControls appearance={appearance} player={soundscape} />}
+          ? <TurntableDeck player={player} motion={turntableMotion} reducedMotion={reducedMotion} />
+          : <PlayerControls appearance={appearance} player={player} />}
         onSelect={selectLayer} onExpanded={setView} onEffective={setEffective} onInk={setInk}
       />
       <header className="stage-toolbar">
@@ -154,7 +163,7 @@ export function App() {
         <span>{expanded ? '按住拖动旋转 · 点击薄片' : '按住拖动旋转 · 双击复位'}</span>
       </div>
     </section>
-    <MaterialPanel shape={shape} onShape={setShape} expanded={expanded} selected={selected} gap={gap} material={material} effective={effective} ink={ink}
+    <MaterialPanel ambience={ambience} shape={shape} onShape={setShape} expanded={expanded} selected={selected} gap={gap} material={material} effective={effective} ink={ink}
       rain={weather === 'rainy' ? { amount: rainAmount, slideSpeed, onAmount: setRainAmount, onSlideSpeed: setSlideSpeed } : null}
       frost={weather === 'snow' ? { coverage: frostCoverage, onCoverage: changeFrostCoverage } : null}
       samples={samples} onExpanded={setView} onSelect={selectLayer} onGap={changeGap} onParameter={setParameter} onSamples={setSamples} />
