@@ -10,6 +10,7 @@ const FOLDS = [
 ] as const
 
 const MAIN_FOLD = 1
+const WAVE_NUMBER = 5.6
 const smooth = (value: number) => {
   const t = clamp(value)
   return t * t * (3 - 2 * t)
@@ -38,6 +39,14 @@ const columns = (width: number) => ({
   height: new Float32Array(width + 2),
 })
 
+export function getLiquidMotion(audio: AudioInput) {
+  const drive = Math.sqrt(clamp(audio.energy))
+  const swell = clamp(audio.low) * drive
+  const bend = clamp(audio.mid) * drive
+  const shimmer = Math.sqrt(clamp(audio.high)) * drive
+  return { swell, bend, shimmer, speed: 1 + .98 * swell + .28 * bend }
+}
+
 export function createLiquidSurface() {
   const texture = document.createElement('canvas')
   const context = texture.getContext('2d')!
@@ -60,40 +69,35 @@ export function createLiquidSurface() {
     const pixels = image.data
     pixels.fill(0)
     const narrow = clamp((1.85 - width / height) / 1.1)
-    const drive = Math.sqrt(clamp(audio.energy))
-    const swell = clamp(audio.low) * drive
-    const bend = clamp(audio.mid) * drive
-    const shimmer = Math.sqrt(clamp(audio.high)) * drive
+    const { swell, bend, shimmer } = getLiquidMotion(audio)
     const aspect = height / width
     const { palette } = climate
 
     for (const [layer, fold] of FOLDS.entries()) {
       const { crest, depth, height: rise } = profiles[layer]
-      const t = phase * fold.rate + fold.phase
+      const travel = phase * fold.rate / WAVE_NUMBER
+      const amplitude = 1 + .82 * swell + .24 * bend
 
-      // Each crest travels through a moving field across x. A slower opposing
-      // mode broadens and narrows the folds without shifting the whole picture.
+      // Sample every part of the fold in the same moving coordinates. As travel
+      // increases, its crests, troughs and smaller ripples all advance to the right.
       for (let column = 0; column < crest.length; column++) {
         const x = (column - .5) / fieldWidth
-        const traveling = 5.6 * x - t
-        const counter = 8.25 * x + .47 * t + fold.phase
-        const curl = Math.sin(3.9 * x - .67 * t + 1.5)
-        const broad = .058 * Math.sin(traveling) + .032 * Math.sin(counter)
-        const musicShape = .046 * swell * Math.sin(traveling - .5)
-          + .064 * bend * Math.sin(7.3 * x - .72 * t + fold.phase)
-          + .0045 * shimmer * Math.sin(19 * x - 1.38 * t)
-        const approach = .78 - .46 * x + .132 * Math.sin(5.45 * x + 1.06)
-          + .042 * Math.sin(4.8 * x + fold.phase)
+        const flowingX = x - travel
+        const crestPhase = WAVE_NUMBER * flowingX - fold.phase
+        const curl = Math.sin(3.9 * flowingX + fold.phase + 1.5)
+        const broadWave = .108 * Math.sin(crestPhase) + .043 * Math.sin(8.25 * flowingX + fold.phase)
+        const ripples = .023 * bend * Math.sin(11.2 * flowingX - fold.phase)
+          + .0045 * shimmer * Math.sin(19 * flowingX)
+        const approach = .78 - .46 * x
         const perspective = narrow * (.028 * x - .112 * (1 - x))
         crest[column] = approach + fold.offset + perspective + .034 * climate.sunlight
-          + climate.waveAmplitude * (broad + musicShape)
-        depth[column] = fold.depth * (1 + .22 * curl + .30 * bend * Math.cos(traveling - .9))
-        rise[column] = fold.height * (1 + .19 * Math.sin(traveling + .85) + .65 * swell)
+          + climate.waveAmplitude * (amplitude * broadWave + ripples)
+        depth[column] = fold.depth * (1 + .22 * curl + .30 * bend * Math.cos(crestPhase - .9))
+        rise[column] = fold.height * (1 + .19 * Math.sin(crestPhase + .85)) * (1 + .65 * swell)
       }
 
       const [shadow, , body] = palette[fold.color]
       const [air, tint, sun] = palette.light
-      const sparkle = .52 + .33 * Math.sin(.62 * t + .2)
       const edgeSoftness = layer === 0 ? .024 : .062 + layer * .007
       const lightColor = layer === 0 ? air : layer === MAIN_FOLD ? palette.foam[1] : tint
       const shadowOpacity = .17 * climate.cloudCover
@@ -108,7 +112,7 @@ export function createLiquidSurface() {
         const depthSlope = (depth[at + 1] - depth[at - 1]) * .5 * fieldWidth
         const heightSlope = (rise[at + 1] - rise[at - 1]) * .5 * fieldWidth
         const curvature = clamp((crest[at + 1] - 2 * crest[at] + crest[at - 1]) * fieldWidth * fieldWidth * .16, -.65, .65)
-        const reflected = .24 + .76 / (1 + 19 * (u - sparkle) ** 2)
+        const reflected = .36 + .64 * smooth(.5 + .5 * Math.cos(WAVE_NUMBER * (u - travel) - fold.phase - .94))
         const warm = climate.sunlight * .11 / (1 + 35 * (u - .805) ** 2)
         const cloud = 1 - shadowOpacity / (1 + 12 * (u - cloudX) ** 2)
         const lightR = mix(lightColor[0], sun[0], warm)

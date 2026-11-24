@@ -4,6 +4,7 @@ import { WEATHER_PRESETS, blendClimate, type Climate, type WeatherId } from './c
 import { createGlassRenderer, type SurfaceEffect } from './glassRenderer'
 import { INITIAL_INK_READING, LAYERS, clamp, effectiveMaterial, mix, prefersLightInk, type EffectiveMaterial, type InkReading, type LayerId, type Material } from './material'
 import { createMusicEnvelope } from './musicEnergy'
+import { getLiquidMotion } from './liquidSurface'
 import { PITCH_RANGE, YAW_RANGE, hitLayer, inkPlaneTransform, makeProjection, projectedBounds, type Projection, type ViewRotation } from './projection'
 import { GLASS_SHAPES, type Point, type ShapeId } from './shape'
 import { createBackgroundSampler, sampleInkPositions } from './sampling'
@@ -112,6 +113,7 @@ export function GlassStage(props: Props) {
     let load = 0
     let weather = latest.current.weather
     let climate = WEATHER_PRESETS[weather]
+    let liquidSpeed = climate.flowSpeed
     let weatherStarted = 0
     let climateFrom: Climate | null = null
     let renderedClimate = climate, renderedTime = time
@@ -216,7 +218,6 @@ export function GlassStage(props: Props) {
         }
       }
 
-      const lastSpeed = climate.flowSpeed
       const lastCloudSpeed = climate.cloudSpeed
       const lastCloudDriftSpeed = lastCloudSpeed * climate.cloudDrift
       if (weather !== state.weather) {
@@ -234,11 +235,20 @@ export function GlassStage(props: Props) {
         }
       }
       time += sceneStep
-      phase += sceneStep * (lastSpeed + climate.flowSpeed) / 2
       cloudTime += sceneStep * (lastCloudSpeed + climate.cloudSpeed) / 2
       cloudDriftTime += sceneStep * (lastCloudDriftSpeed + climate.cloudSpeed * climate.cloudDrift) / 2
       const music = state.musicBands?.current
       const audio = musicEnvelope(backgroundStep, music && (state.musicPlaying || music.energy > 0) ? music : state.audio)
+      const sceneAudio = state.reducedMotion ? {
+        low: audio.low * REDUCED_MUSIC_STRENGTH,
+        mid: audio.mid * REDUCED_MUSIC_STRENGTH,
+        high: audio.high * REDUCED_MUSIC_STRENGTH,
+        energy: audio.energy * REDUCED_MUSIC_STRENGTH,
+      } : audio
+      const nextLiquidSpeed = climate.flowSpeed * getLiquidMotion(sceneAudio).speed
+      // Integrate speed so changes in the music never reset the wave phase.
+      phase += sceneStep * (liquidSpeed + nextLiquidSpeed) / 2
+      liquidSpeed = nextLiquidSpeed
 
       if (resetToken !== state.reset) {
         resetToken = state.reset
@@ -259,12 +269,6 @@ export function GlassStage(props: Props) {
 
       const backdropChanged = resized || ((state.backgroundPlaying || climate !== renderedClimate) && now - previousBackground >= SCENE_FRAME_MS - 1)
       if (backdropChanged) {
-        const sceneAudio = state.reducedMotion ? {
-          low: audio.low * REDUCED_MUSIC_STRENGTH,
-          mid: audio.mid * REDUCED_MUSIC_STRENGTH,
-          high: audio.high * REDUCED_MUSIC_STRENGTH,
-          energy: audio.energy * REDUCED_MUSIC_STRENGTH,
-        } : audio
         background.render({ time, phase, cloudTime, cloudDriftTime, climate, audio: sceneAudio, detail })
         renderedClimate = climate
         renderedTime = time
