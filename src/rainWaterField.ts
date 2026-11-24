@@ -55,6 +55,8 @@ function createSimulation(shape: GlassShape, geometry: ShapeGeometry) {
   const HEIGHT = Math.round(PLATE_H * WIDTH / PLATE_W)
   const X_SCALE = WIDTH / PLATE_W, Y_SCALE = HEIGHT / PLATE_H
   const regions = playerClearRegions(shape.id)
+  // Let water remain visible beneath the rounded player's text and controls.
+  const playerOpenness = rectangular ? .65 : .13
   const scale = geometry.width / PLATE_W
   const distanceAt = (x: number, y: number) => shape.distance({
     x: (x / PLATE_W - .5) * geometry.width,
@@ -85,7 +87,8 @@ function createSimulation(shape: GlassShape, geometry: ShapeGeometry) {
     for (const area of regions) {
       const dx = Math.max(0, area.x - u, u - area.x - area.width) * PLATE_W
       const dy = Math.max(0, area.y - v, v - area.y - area.height) * PLATE_H
-      openness = Math.min(openness, .13 + .87 * ease(clamp(Math.hypot(dx, dy) / (9 + broad * 4))))
+      const feather = ease(clamp(Math.hypot(dx, dy) / (9 + broad * 4)))
+      openness = Math.min(openness, mix(playerOpenness, 1, feather))
     }
     const edge = distanceAt(u * PLATE_W, v * PLATE_H)
     reserve[i] = openness * ease(clamp(-edge / 1.6))
