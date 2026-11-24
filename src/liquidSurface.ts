@@ -1,5 +1,5 @@
 import {
-  BufferAttribute, BufferGeometry, CanvasTexture, Color, DoubleSide, DynamicDrawUsage, LinearFilter,
+  BufferAttribute, BufferGeometry, CanvasTexture, Color, DoubleSide, DynamicDrawUsage, LinearMipmapLinearFilter,
   Mesh, PerspectiveCamera, Scene, ShaderMaterial, SRGBColorSpace, Vector2, Vector3, Vector4, WebGLRenderer,
 } from 'three'
 import { clamp, mix } from './material'
@@ -28,6 +28,7 @@ const FILM = {
     focusDepth: 9.0,
     focusRange: 4.9,
   },
+  focus: { near: [5.2, 7.8], far: [8.8, 13.4], strength: .76 },
   quality: {
     fine: { across: 152, along: 96, width: 920, height: 545 },
     compact: { across: 96, along: 66, width: 710, height: 470 },
@@ -63,6 +64,8 @@ const FRAGMENT = `
   uniform vec2 uFrame;
   uniform vec3 uOptics;
   uniform vec4 uLight;
+  uniform vec4 uFocusRange;
+  uniform float uFocusStrength;
   uniform vec3 uAbsorption;
   uniform vec3 uReflectionTints;
   uniform float uIor;
@@ -85,16 +88,16 @@ const FRAGMENT = `
     return (uDeep * weights.x + uCobalt * weights.y + uLake * weights.z) / dot(weights, vec3(1.0));
   }
 
-  vec3 readEnvironment(vec2 center, vec2 radius) {
-    vec3 color = texture2D(uEnvironment, center).rgb * 0.36;
-    color += texture2D(uEnvironment, center + vec2(radius.x, radius.y * 0.42)).rgb * 0.16;
-    color += texture2D(uEnvironment, center - vec2(radius.x, radius.y * 0.42)).rgb * 0.16;
-    color += texture2D(uEnvironment, center + vec2(-radius.x * 0.42, radius.y)).rgb * 0.16;
-    color += texture2D(uEnvironment, center - vec2(-radius.x * 0.42, radius.y)).rgb * 0.16;
+  vec3 readEnvironment(vec2 center, vec2 radius, float level) {
+    vec3 color = textureLod(uEnvironment, center, level).rgb * 0.36;
+    color += textureLod(uEnvironment, center + vec2(radius.x, radius.y * 0.42), level).rgb * 0.16;
+    color += textureLod(uEnvironment, center - vec2(radius.x, radius.y * 0.42), level).rgb * 0.16;
+    color += textureLod(uEnvironment, center + vec2(-radius.x * 0.42, radius.y), level).rgb * 0.16;
+    color += textureLod(uEnvironment, center - vec2(-radius.x * 0.42, radius.y), level).rgb * 0.16;
     return color;
   }
 
-  float reflectionStrip(vec3 ray, vec3 rayDx, vec3 rayDy, vec3 center, vec2 span, float tilt) {
+  float reflectionStrip(vec3 ray, vec3 rayDx, vec3 rayDy, vec3 center, vec2 span, float tilt, float softness) {
     vec3 horizontal = normalize(cross(vec3(0.0, 1.0, 0.0), center));
     vec3 vertical = cross(center, horizontal);
     vec3 major = horizontal + tilt * vertical;
@@ -104,7 +107,8 @@ const FRAGMENT = `
     vec2 dx = vec2(dot(rayDx, major), dot(rayDx, minor));
     vec2 dy = vec2(dot(rayDy, major), dot(rayDy, minor));
     vec2 footprint = min(vec2(0.12), 0.62 * sqrt(dx * dx + dy * dy));
-    vec2 filtered = sqrt(span * span + footprint * footprint);
+    vec2 spread = softness * vec2(0.35, 1.0);
+    vec2 filtered = sqrt(span * span + footprint * footprint + spread * spread);
     vec2 normalized = position / filtered;
     float coverage = (span.x * span.y) / (filtered.x * filtered.y);
     return coverage * exp(-dot(normalized, normalized)) * smoothstep(0.18, 0.78, dot(ray, center));
@@ -132,6 +136,12 @@ const FRAGMENT = `
     float facing = clamp(abs(dot(normal, eye)), 0.0, 1.0);
     float faceWeight = smoothstep(0.0, 0.16, facing);
     float interior = smoothstep(0.045, 0.31, facing);
+    // The focus plane is fixed in camera space, so an off-center point at
+    // the same depth stays equally sharp. Fade out through the grazing rim.
+    float viewDepth = -vViewPosition.z;
+    float nearDefocus = 1.0 - smoothstep(uFocusRange.x, uFocusRange.y, viewDepth);
+    float farDefocus = smoothstep(uFocusRange.z, uFocusRange.w, viewDepth);
+    float defocus = uFocusStrength * interior * (0.64 * nearDefocus + farDefocus);
     float edgeDiffuse = 0.20 + 0.42 * abs(dot(normal, light));
     float diffuse = mix(edgeDiffuse, max(0.0, dot(n, light)), faceWeight);
     vec2 uv = gl_FragCoord.xy / uFrame;
@@ -149,7 +159,9 @@ const FRAGMENT = `
     // filter radius open together on the smoothly turning visible surface.
     vec2 shift = (refracted.xy + eye.xy) * uOptics.y * (0.98 + 1.05 * vThickness) * interior;
     float blur = 0.002 + interior * roughness * (0.012 + 0.034 * (1.0 - focus) + 0.008 * vThickness);
-    vec3 environment = readEnvironment(uv + shift * units, blur * units);
+    // Prefilter the source scenery rather than blurring covered pixels of
+    // the rendered sheet. The same taps stay centered on the refracted ray.
+    vec3 environment = readEnvironment(uv + shift * units, blur * units, 3.1 * defocus);
     // The ray length grows with the sheet's local thickness and its angle
     // inside the film. Refraction keeps the path bounded at grazing angles.
     float throughFacing = max(0.65, -dot(refracted, n));
@@ -158,19 +170,20 @@ const FRAGMENT = `
     float clarity = uOptics.x * (1.0 - 0.13 * cavity) * (1.0 - 0.16 * fresnel);
     vec3 base = mix(body, transmission, clarity);
 
-    float soft = reflectionStrip(reflected, rayDx, rayDy, normalize(vec3(-0.26, 0.55, -0.79)), vec2(0.87, 0.10 + 0.30 * roughness), 0.28);
-    float ribbon = reflectionStrip(reflected, rayDx, rayDy, normalize(vec3(0.46, 0.25, -0.85)), vec2(0.68, 0.028 + 0.13 * roughness), -0.19);
-    float shade = reflectionStrip(reflected, rayDx, rayDy, normalize(vec3(-0.10, 0.06, -0.99)), vec2(0.79, 0.14 + 0.16 * roughness), 0.09);
+    float reflectionBlur = 0.13 * defocus;
+    float soft = reflectionStrip(reflected, rayDx, rayDy, normalize(vec3(-0.26, 0.55, -0.79)), vec2(0.87, 0.10 + 0.30 * roughness), 0.28, reflectionBlur);
+    float ribbon = reflectionStrip(reflected, rayDx, rayDy, normalize(vec3(0.46, 0.25, -0.85)), vec2(0.68, 0.028 + 0.13 * roughness), -0.19, reflectionBlur);
+    float shade = reflectionStrip(reflected, rayDx, rayDy, normalize(vec3(-0.10, 0.06, -0.99)), vec2(0.79, 0.14 + 0.16 * roughness), 0.09, reflectionBlur);
     // The dark and bright strips share the same reflection ray and the same
     // deformed normal, so they stretch and turn with the surface.
     float navy = uReflectionTints.x * (0.70 + 0.30 * fresnel) * uLight.x * shade * interior;
     base = mix(base, mix(uDeep, uCobalt, 0.23 + 0.18 * diffuse), navy);
-    float violet = uReflectionTints.z * reflectionStrip(reflected, rayDx, rayDy, normalize(vec3(-0.68, 0.39, -0.62)), vec2(0.34, 0.16), 0.23);
+    float violet = uReflectionTints.z * reflectionStrip(reflected, rayDx, rayDy, normalize(vec3(-0.68, 0.39, -0.62)), vec2(0.34, 0.16), 0.23, reflectionBlur);
     base = mix(base, uLavender, violet * (1.0 - shade));
     float cyan = uReflectionTints.y * (0.70 + 0.30 * fresnel) * uLight.x * soft;
     base = mix(base, uCyan, cyan);
 
-    float edgeLight = reflectionStrip(reflected, rayDx, rayDy, normalize(vec3(0.44, -0.12, -0.89)), vec2(0.52, 0.12 + 0.14 * roughness), -0.15);
+    float edgeLight = reflectionStrip(reflected, rayDx, rayDy, normalize(vec3(0.44, -0.12, -0.89)), vec2(0.52, 0.12 + 0.14 * roughness), -0.15, 0.0);
     float rim = filteredRim(facing, mix(20.0, 10.0, roughness)) * (0.08 + 0.59 * edgeLight + 0.20 * ribbon + 0.13 * soft);
     float key = faceWeight * pow(max(0.0, dot(n, normalize(light + eye))), mix(64.0, 20.0, roughness));
     // Hand over the narrow reflection to the grazing rim on the same film.
@@ -180,8 +193,8 @@ const FRAGMENT = `
     float edgeGlint = uLight.y * rim * (0.37 + 0.63 * focus);
     float specular = clamp(broadGlint + mix(edgeGlint, ribbonGlint, interior), 0.0, 0.65);
     vec2 reflectionUV = vec2(0.53 + reflected.x * 0.31, 0.66 + reflected.y * 0.23);
-    vec3 reflectedEnvironment = (texture2D(uEnvironment, reflectionUV + vec2(0.06, 0.04)).rgb
-      + texture2D(uEnvironment, reflectionUV - vec2(0.06, 0.04)).rgb) * 0.5;
+    vec3 reflectedEnvironment = (textureLod(uEnvironment, reflectionUV + vec2(0.06, 0.04), 0.0).rgb
+      + textureLod(uEnvironment, reflectionUV - vec2(0.06, 0.04), 0.0).rgb) * 0.5;
     vec3 glint = mix(mix(uCyan, uGlint, mix(0.82, 0.17, interior)), reflectedEnvironment, 0.12 * soft);
     gl_FragColor = vec4(mix(base, glint, specular), 1.0);
     #include <colorspace_fragment>
@@ -415,7 +428,7 @@ export function createLiquidSurface() {
   skyCanvas.width = 384
   skyCanvas.height = 256
   const sky = skyCanvas.getContext('2d', { alpha: false })!
-  const { palette, optics } = FILM
+  const { palette, optics, focus } = FILM
   const gradient = sky.createLinearGradient(0, 0, skyCanvas.width * .13, skyCanvas.height)
   for (const [offset, color] of palette.sky) gradient.addColorStop(offset, color)
   sky.fillStyle = gradient
@@ -426,8 +439,7 @@ export function createLiquidSurface() {
   const environment = environmentCanvas.getContext('2d', { alpha: false })!
   const environmentTexture = new CanvasTexture(environmentCanvas)
   environmentTexture.colorSpace = SRGBColorSpace
-  environmentTexture.minFilter = LinearFilter
-  environmentTexture.generateMipmaps = false
+  environmentTexture.minFilter = LinearMipmapLinearFilter
   let quality: Quality = FILM.quality.fine
   let surface = makeSurfaceGeometry(quality)
   const scene = new Scene()
@@ -439,6 +451,8 @@ export function createLiquidSurface() {
     uFrame: { value: new Vector2() }, uEnvironment: { value: environmentTexture },
     uOptics: { value: new Vector3(optics.transmission, optics.refraction, optics.roughness) },
     uLight: { value: new Vector4(optics.reflection, optics.rimLight, optics.focusDepth, optics.focusRange) },
+    uFocusRange: { value: new Vector4(...focus.near, ...focus.far) },
+    uFocusStrength: { value: focus.strength },
     uAbsorption: { value: new Vector3(...optics.absorption) },
     uReflectionTints: { value: new Vector3(optics.navyReflection, optics.cyanReflection, optics.violetReflection) },
     uIor: { value: optics.refractiveIndex },
