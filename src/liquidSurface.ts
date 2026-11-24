@@ -11,7 +11,7 @@ const FILM = {
       [0, '#77badb'], [.24, '#a6c2d3'], [.42, '#d4d5d9'], [.59, '#efe4d5'], [1, '#c5dfeb'],
     ],
   },
-  wave: { amplitude: 1.04, crestLift: 1.08, travel: .69, localBend: .73, disturbance: .86, span: 8.6, response: 10.4 },
+  wave: { amplitude: 1.04, crestLift: 1.08, travel: 2.76, localBend: .73, disturbance: .86, span: 8.6, response: 10.4 },
   fold: { neck: .43, roll: .63 },
   optics: {
     transmission: .80,
