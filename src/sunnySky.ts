@@ -66,26 +66,24 @@ function cloudAtlas(seed: number, stretched: boolean) {
   return canvas
 }
 
-export function createCoastalSky() {
+export function createSunnySky() {
   const clouds = [
     { image: cloudAtlas(73, false), x: -.12, y: .115, span: .42, height: .215, speed: .00195, alpha: .83 },
     { image: cloudAtlas(137, false), x: .27, y: .169, span: .44, height: .245, speed: .00136, alpha: .94 },
     { image: cloudAtlas(34, true), x: .67, y: .301, span: .31, height: .116, speed: .00095, alpha: .70 },
     { image: cloudAtlas(97, true), x: -.03, y: .363, span: .37, height: .072, speed: .00109, alpha: .54 },
   ]
-  return (ctx: CanvasRenderingContext2D, width: number, height: number, time: number, horizon: number, lightX: number, lightY: number) => {
-    const skyline = horizon * height
+  return (ctx: CanvasRenderingContext2D, width: number, height: number, time: number, lightX: number, lightY: number, opacity: number) => {
+    const skyFade = height * .46
     ctx.save()
-    const sky = ctx.createLinearGradient(0, 0, 0, skyline)
+    ctx.globalAlpha = opacity
+    const sky = ctx.createLinearGradient(0, 0, 0, skyFade)
     sky.addColorStop(0, '#3178ad')
     sky.addColorStop(.46, '#609fc7')
     sky.addColorStop(.78, '#97c4d9')
     sky.addColorStop(1, '#b7d9e5')
     ctx.fillStyle = sky
-    ctx.fillRect(0, 0, width, Math.ceil(skyline + 1))
-    ctx.beginPath()
-    ctx.rect(0, 0, width, Math.ceil(skyline + 1))
-    ctx.clip()
+    ctx.fillRect(0, 0, width, height)
     const sunX = lightX * width, sunY = lightY * height
     const r = Math.min(width * .32, height * .34)
     const glow = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, r)
@@ -94,13 +92,13 @@ export function createCoastalSky() {
     glow.addColorStop(.66, 'rgba(219,232,231,.09)')
     glow.addColorStop(1, 'rgba(200,228,240,0)')
     ctx.fillStyle = glow
-    ctx.fillRect(0, 0, width, skyline)
+    ctx.fillRect(0, 0, width, height)
     const narrow = clamp((1.8 - width / height) / 1.15)
     for (const cloud of clouds) {
       const span = cloud.span * (1 + narrow * .27)
       const period = 1 + span + .16
-      const origin = (cloud.x + time * cloud.speed + span + .08) % period - span - .08
-      ctx.globalAlpha = cloud.alpha
+      const origin = (cloud.x + time * cloud.speed * 1.5 + span + .08) % period - span - .08
+      ctx.globalAlpha = cloud.alpha * opacity
       ctx.drawImage(cloud.image, origin * width, cloud.y * height, span * width, cloud.height * height * (1 - narrow * .07))
     }
     ctx.restore()
