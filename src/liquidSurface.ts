@@ -6,7 +6,7 @@ import { clamp, mix } from './material'
 
 const FILM = {
   palette: {
-    deep: '#091d56', cobalt: '#184bc7', lake: '#0e82bb', cyan: '#6cd7e9', lavender: '#9b9bdb', glint: '#e6fbff',
+    deep: '#091d58', cobalt: '#1748c8', lake: '#117fcc', cyan: '#57dfed', lavender: '#8479cd', glint: '#e6fbff',
     sky: [
       [0, '#77badb'], [.24, '#a6c2d3'], [.42, '#d4d5d9'], [.59, '#efe4d5'], [1, '#c5dfeb'],
     ],
@@ -14,12 +14,16 @@ const FILM = {
   wave: { amplitude: 1.04, crestLift: 1.08, travel: .69, localBend: .73, disturbance: .86, span: 8.6, response: 10.4 },
   fold: { neck: .43, roll: .63 },
   optics: {
-    transmission: .82,
-    absorption: [1.88, .93, .17],
-    refraction: .103,
+    transmission: .80,
+    absorption: [3.65, 1.64, .29],
+    sheetThickness: [.34, .82],
+    refraction: .105,
     refractiveIndex: 1.38,
     roughness: .24,
     reflection: .82,
+    navyReflection: .69,
+    cyanReflection: .48,
+    violetReflection: .10,
     rimLight: .73,
     focusDepth: 9.0,
     focusRange: 4.9,
@@ -35,17 +39,18 @@ type Inspection = 'wireframe' | 'side'
 
 const VERTEX = `
   attribute float cavity;
-  varying vec2 vSurfaceYZ;
+  attribute float thickness;
   varying vec3 vViewPosition;
   varying vec3 vViewNormal;
   varying float vCavity;
+  varying float vThickness;
 
   void main() {
     vec4 viewPosition = modelViewMatrix * vec4(position, 1.0);
-    vSurfaceYZ = position.yz;
     vViewPosition = viewPosition.xyz;
     vViewNormal = normalMatrix * normal;
     vCavity = cavity;
+    vThickness = thickness;
     gl_Position = projectionMatrix * viewPosition;
   }
 `
@@ -56,12 +61,13 @@ const FRAGMENT = `
   uniform vec3 uOptics;
   uniform vec4 uLight;
   uniform vec3 uAbsorption;
+  uniform vec3 uReflectionTints;
   uniform float uIor;
   uniform sampler2D uEnvironment;
-  varying vec2 vSurfaceYZ;
   varying vec3 vViewPosition;
   varying vec3 vViewNormal;
   varying float vCavity;
+  varying float vThickness;
 
   vec3 readEnvironment(vec2 center, vec2 radius) {
     vec3 color = texture2D(uEnvironment, center).rgb * 0.36;
@@ -115,12 +121,10 @@ const FRAGMENT = `
     vec2 uv = gl_FragCoord.xy / uFrame;
     float distanceFromFocus = (length(vViewPosition) - uLight.z) / uLight.w;
     float focus = 1.0 / (1.0 + distanceFromFocus * distanceFromFocus);
-    float lower = 1.0 - smoothstep(-1.45, 1.19, vSurfaceYZ.x);
     float cavity = vCavity * mix(0.42, 1.0, interior);
-    float density = clamp(0.37 * cavity + 0.52 * lower + 0.17 * smoothstep(-4.3, 4.4, vSurfaceYZ.y), 0.0, 1.0);
-    float tone = clamp(0.13 + 0.71 * diffuse - 0.24 * cavity - 0.29 * lower, 0.0, 1.0);
-    vec3 blue = mix(uDeep, uCobalt, smoothstep(0.03, 0.58, tone));
-    vec3 body = mix(blue, uLake, smoothstep(0.28, 0.86, tone));
+    float tone = diffuse - 0.16 * cavity;
+    vec3 blue = mix(uDeep, uCobalt, smoothstep(0.0, 0.58, tone));
+    vec3 body = mix(blue, uLake, smoothstep(0.40, 0.94, tone));
 
     float roughness = uOptics.z + 0.20 * (1.0 - focus);
     float fresnelBase = pow((uIor - 1.0) / (uIor + 1.0), 2.0);
@@ -129,13 +133,15 @@ const FRAGMENT = `
     vec2 units = vec2(uFrame.y / uFrame.x, 1.0);
     // Keep the foreground sample aligned at a tangent. Refraction and its
     // filter radius open together on the smoothly turning visible surface.
-    vec2 shift = (refracted.xy + eye.xy) * uOptics.y * (1.5 + 0.75 * density) * interior;
-    float blur = 0.003 + interior * roughness * (0.016 + 0.033 * (1.0 - focus) + 0.011 * density);
+    vec2 shift = (refracted.xy + eye.xy) * uOptics.y * (0.98 + 1.05 * vThickness) * interior;
+    float blur = 0.002 + interior * roughness * (0.012 + 0.034 * (1.0 - focus) + 0.008 * vThickness);
     vec3 environment = readEnvironment(uv + shift * units, blur * units);
-    // Longer optical paths absorb more warm light, revealing the deeper blue.
-    float opticalDepth = mix(0.23, 1.48, density) * (1.0 + 0.25 * (1.0 - facing));
+    // The ray length grows with the sheet's local thickness and its angle
+    // inside the film. Refraction keeps the path bounded at grazing angles.
+    float throughFacing = max(0.65, -dot(refracted, n));
+    float opticalDepth = vThickness / throughFacing * (1.0 + 0.12 * cavity);
     vec3 transmission = environment * exp(-uAbsorption * opticalDepth);
-    float clarity = uOptics.x * mix(0.93, 0.39, density) * (1.0 - 0.19 * fresnel);
+    float clarity = uOptics.x * (1.0 - 0.13 * cavity) * (1.0 - 0.16 * fresnel);
     vec3 base = mix(body, transmission, clarity);
 
     float soft = reflectionStrip(reflected, rayDx, rayDy, normalize(vec3(-0.26, 0.55, -0.79)), vec2(0.87, 0.10 + 0.30 * roughness), 0.28);
@@ -143,10 +149,12 @@ const FRAGMENT = `
     float shade = reflectionStrip(reflected, rayDx, rayDy, normalize(vec3(-0.10, 0.06, -0.99)), vec2(0.79, 0.14 + 0.16 * roughness), 0.09);
     // The dark and bright strips share the same reflection ray and the same
     // deformed normal, so they stretch and turn with the surface.
-    base = mix(base, mix(uDeep, uCobalt, 0.26 + 0.18 * diffuse), interior * uLight.x * shade * (0.24 + 0.38 * fresnel));
-    float violet = 0.13 * reflectionStrip(reflected, rayDx, rayDy, normalize(vec3(-0.68, 0.39, -0.62)), vec2(0.34, 0.16), 0.23);
+    float navy = uReflectionTints.x * (0.70 + 0.30 * fresnel) * uLight.x * shade * interior;
+    base = mix(base, mix(uDeep, uCobalt, 0.23 + 0.18 * diffuse), navy);
+    float violet = uReflectionTints.z * reflectionStrip(reflected, rayDx, rayDy, normalize(vec3(-0.68, 0.39, -0.62)), vec2(0.34, 0.16), 0.23);
     base = mix(base, uLavender, violet * (1.0 - shade));
-    base = mix(base, uCyan, uLight.x * soft * (0.23 + 0.19 * fresnel));
+    float cyan = uReflectionTints.y * (0.70 + 0.30 * fresnel) * uLight.x * soft;
+    base = mix(base, uCyan, cyan);
 
     float edgeLight = reflectionStrip(reflected, rayDx, rayDy, normalize(vec3(0.44, -0.12, -0.89)), vec2(0.52, 0.12 + 0.14 * roughness), -0.15);
     float rim = filteredRim(facing, mix(20.0, 10.0, roughness)) * (0.08 + 0.59 * edgeLight + 0.20 * ribbon + 0.13 * soft);
@@ -160,7 +168,7 @@ const FRAGMENT = `
     vec2 reflectionUV = vec2(0.53 + reflected.x * 0.31, 0.66 + reflected.y * 0.23);
     vec3 reflectedEnvironment = (texture2D(uEnvironment, reflectionUV + vec2(0.06, 0.04)).rgb
       + texture2D(uEnvironment, reflectionUV - vec2(0.06, 0.04)).rgb) * 0.5;
-    vec3 glint = mix(uGlint, reflectedEnvironment, 0.19 * soft);
+    vec3 glint = mix(mix(uCyan, uGlint, mix(0.82, 0.17, interior)), reflectedEnvironment, 0.12 * soft);
     gl_FragColor = vec4(mix(base, glint, specular), 1.0);
     #include <colorspace_fragment>
   }
@@ -187,6 +195,7 @@ function makeSurfaceGeometry({ across, along }: Quality) {
   const positions = new BufferAttribute(new Float32Array(stride * (along + 1) * 3), 3).setUsage(DynamicDrawUsage)
   const normals = new BufferAttribute(new Float32Array(positions.count * 3), 3).setUsage(DynamicDrawUsage)
   const cavities = new BufferAttribute(new Float32Array(positions.count), 1).setUsage(DynamicDrawUsage)
+  const thicknesses = new BufferAttribute(new Float32Array(positions.count), 1).setUsage(DynamicDrawUsage)
   const indices = new Uint16Array(across * along * 6)
   let index = 0
   for (let row = 0; row < along; row++) {
@@ -203,6 +212,7 @@ function makeSurfaceGeometry({ across, along }: Quality) {
   geometry.setAttribute('position', positions)
   geometry.setAttribute('normal', normals)
   geometry.setAttribute('cavity', cavities)
+  geometry.setAttribute('thickness', thicknesses)
   geometry.setIndex(new BufferAttribute(indices, 1))
   const columns = Array.from({ length: stride }, (_, column) => {
     const station = 2 * column / across - 1
@@ -222,7 +232,7 @@ function makeSurfaceGeometry({ across, along }: Quality) {
   })
   const columnStencils = derivativeStencils(columns)
   const depthStencils = derivativeStencils(sections.map(section => section.z))
-  return { geometry, positions, normals, cavities, columns, sections, columnStencils, depthStencils, stride }
+  return { geometry, positions, normals, cavities, thicknesses, columns, sections, columnStencils, depthStencils, stride }
 }
 
 function flowCell(x: number, t: number) {
@@ -259,7 +269,7 @@ function flowPressure(position: number, time: number) {
 }
 
 function deform(surface: ReturnType<typeof makeSurfaceGeometry>, width: number, time: number) {
-  const { positions, normals, cavities, columns, sections, columnStencils, depthStencils, stride } = surface
+  const { positions, normals, cavities, thicknesses, columns, sections, columnStencils, depthStencils, stride } = surface
   const { amplitude, crestLift, travel, localBend, disturbance, span, response } = FILM.wave
   // Integrate two slow, shallow speed variations rather than scaling time by
   // an instantaneous speed. The resulting travel always advances to the right.
@@ -318,10 +328,12 @@ function deform(surface: ReturnType<typeof makeSurfaceGeometry>, width: number, 
   // The non-uniform stencil estimates the tangent at the vertex itself and
   // gives both triangles at each diagonal the same smooth normal field.
   const widthSquared = width * width
+  const [thin, thick] = FILM.optics.sheetThickness
   for (const [row, depth] of depthStencils.entries()) {
     const rowStart = row * stride
     const farStart = depth.previous * stride
     const nearStart = depth.next * stride
+    const restThickness = mix(thin, thick, sections[row].foreground)
     for (let col = 0; col < stride; col++) {
       const across = columnStencils[col]
       const i = rowStart + col
@@ -347,6 +359,10 @@ function deform(surface: ReturnType<typeof makeSurfaceGeometry>, width: number, 
       const ny = width * dzDepth
       const nz = -width * dyDepth
       const length = Math.sqrt(nx * nx + ny * ny + nz * nz)
+      // The tangent cross product measures area stretch relative to the flat
+      // sheet. Stretched areas carry a shallower layer of liquid.
+      const stretch = clamp(length / width, .66, 2.4)
+      thicknesses.setX(i, restThickness / Math.sqrt(stretch))
       if (length <= 1e-8) {
         normals.setXYZ(i, 0, 1, 0)
         cavities.setX(i, 0)
@@ -371,21 +387,26 @@ function deform(surface: ReturnType<typeof makeSurfaceGeometry>, width: number, 
   positions.needsUpdate = true
   normals.needsUpdate = true
   cavities.needsUpdate = true
+  thicknesses.needsUpdate = true
 }
 
 export function createLiquidSurface() {
   const canvas = document.createElement('canvas')
   const context = canvas.getContext('webgl2', { alpha: true, antialias: true })
   const renderer = context && new WebGLRenderer({ canvas, context })
-  const environmentCanvas = document.createElement('canvas')
-  environmentCanvas.width = 384
-  environmentCanvas.height = 256
-  const environment = environmentCanvas.getContext('2d', { alpha: false })!
+  const skyCanvas = document.createElement('canvas')
+  skyCanvas.width = 384
+  skyCanvas.height = 256
+  const sky = skyCanvas.getContext('2d', { alpha: false })!
   const { palette, optics } = FILM
-  const gradient = environment.createLinearGradient(0, 0, environmentCanvas.width * .13, environmentCanvas.height)
+  const gradient = sky.createLinearGradient(0, 0, skyCanvas.width * .13, skyCanvas.height)
   for (const [offset, color] of palette.sky) gradient.addColorStop(offset, color)
-  environment.fillStyle = gradient
-  environment.fillRect(0, 0, environmentCanvas.width, environmentCanvas.height)
+  sky.fillStyle = gradient
+  sky.fillRect(0, 0, skyCanvas.width, skyCanvas.height)
+  const environmentCanvas = document.createElement('canvas')
+  environmentCanvas.width = skyCanvas.width
+  environmentCanvas.height = skyCanvas.height
+  const environment = environmentCanvas.getContext('2d', { alpha: false })!
   const environmentTexture = new CanvasTexture(environmentCanvas)
   environmentTexture.colorSpace = SRGBColorSpace
   environmentTexture.minFilter = LinearFilter
@@ -402,6 +423,7 @@ export function createLiquidSurface() {
     uOptics: { value: new Vector3(optics.transmission, optics.refraction, optics.roughness) },
     uLight: { value: new Vector4(optics.reflection, optics.rimLight, optics.focusDepth, optics.focusRange) },
     uAbsorption: { value: new Vector3(...optics.absorption) },
+    uReflectionTints: { value: new Vector3(optics.navyReflection, optics.cyanReflection, optics.violetReflection) },
     uIor: { value: optics.refractiveIndex },
   }
   const material = new ShaderMaterial({
@@ -413,7 +435,7 @@ export function createLiquidSurface() {
   renderer?.setClearColor(0, 0)
 
   function paintEnvironment(target: CanvasRenderingContext2D) {
-    target.drawImage(environmentCanvas, 0, 0, 1, 1)
+    target.drawImage(skyCanvas, 0, 0, 1, 1)
   }
 
   function render(
@@ -446,8 +468,10 @@ export function createLiquidSurface() {
     camera.updateProjectionMatrix()
     if (import.meta.env.DEV) material.wireframe = inspection === 'wireframe'
 
-    // The visible backdrop and optical texture share the same fixed gradient.
-    // Transmission and reflection resolve within one depth-tested mesh draw.
+    // Capture the sky and weather already painted this frame, before the
+    // single sheet shades and composites over that same background.
+    environment.drawImage(target.canvas, 0, 0, environmentCanvas.width, environmentCanvas.height)
+    environmentTexture.needsUpdate = true
     deform(surface, Math.max(9.1, 10.1 * aspect), time)
     uniforms.uFrame.value.set(frameWidth, frameHeight)
     renderer.render(scene, camera)
