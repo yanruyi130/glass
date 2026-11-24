@@ -35,17 +35,18 @@ type Inspection = 'wireframe' | 'side'
 
 const VERTEX = `
   attribute float cavity;
-  varying vec3 vSurface;
-  varying vec3 vNormal;
+  varying vec2 vSurfaceYZ;
+  varying vec3 vViewPosition;
   varying vec3 vViewNormal;
   varying float vCavity;
 
   void main() {
-    vSurface = position;
-    vNormal = normal;
+    vec4 viewPosition = modelViewMatrix * vec4(position, 1.0);
+    vSurfaceYZ = position.yz;
+    vViewPosition = viewPosition.xyz;
     vViewNormal = normalMatrix * normal;
     vCavity = cavity;
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    gl_Position = projectionMatrix * viewPosition;
   }
 `
 
@@ -57,8 +58,8 @@ const FRAGMENT = `
   uniform vec3 uAbsorption;
   uniform float uIor;
   uniform sampler2D uEnvironment;
-  varying vec3 vSurface;
-  varying vec3 vNormal;
+  varying vec2 vSurfaceYZ;
+  varying vec3 vViewPosition;
   varying vec3 vViewNormal;
   varying float vCavity;
 
@@ -71,39 +72,61 @@ const FRAGMENT = `
     return color;
   }
 
-  float reflectionStrip(vec3 ray, vec3 center, vec2 span, float tilt) {
+  float reflectionStrip(vec3 ray, vec3 rayDx, vec3 rayDy, vec3 center, vec2 span, float tilt) {
     vec3 horizontal = normalize(cross(vec3(0.0, 1.0, 0.0), center));
     vec3 vertical = cross(center, horizontal);
-    vec2 position = vec2(dot(ray, horizontal), dot(ray, vertical));
-    // The two spans represent the long and short sides of an environment light.
-    position = vec2(position.x + tilt * position.y, position.y - tilt * position.x) / span;
-    return exp(-dot(position, position)) * smoothstep(0.18, 0.78, dot(ray, center));
+    vec3 major = horizontal + tilt * vertical;
+    vec3 minor = vertical - tilt * horizontal;
+    vec2 position = vec2(dot(ray, major), dot(ray, minor));
+    // Filter narrow strips by the reflected ray's footprint in this pixel.
+    vec2 dx = vec2(dot(rayDx, major), dot(rayDx, minor));
+    vec2 dy = vec2(dot(rayDy, major), dot(rayDy, minor));
+    vec2 footprint = min(vec2(0.12), 0.62 * sqrt(dx * dx + dy * dy));
+    vec2 filtered = sqrt(span * span + footprint * footprint);
+    vec2 normalized = position / filtered;
+    float coverage = (span.x * span.y) / (filtered.x * filtered.y);
+    return coverage * exp(-dot(normalized, normalized)) * smoothstep(0.18, 0.78, dot(ray, center));
+  }
+
+  float filteredRim(float facing, float exponent) {
+    float halfWidth = clamp(0.5 * fwidth(facing), 0.001, 0.11);
+    float near = max(0.0, facing - halfWidth);
+    float far = min(1.0, facing + halfWidth);
+    float integral = pow(1.0 - near, exponent + 1.0) - pow(1.0 - far, exponent + 1.0);
+    return integral / ((far - near) * (exponent + 1.0));
   }
 
   void main() {
-    float face = gl_FrontFacing ? 1.0 : -1.0;
-    vec3 n = normalize(vNormal) * face;
-    vec3 eye = normalize(cameraPosition - vSurface);
-    vec3 light = normalize(vec3(0.49, 0.75, 0.41));
-    vec3 reflected = reflect(-eye, n);
-    float diffuse = max(0.0, dot(n, light));
-    float facing = max(0.0, dot(n, eye));
+    // Rays, the eye and the shading normal meet in view space. The reflected
+    // ray is then rotated back to sample the fixed world-space lights.
+    vec3 normal = normalize(vViewNormal);
+    vec3 eye = normalize(-vViewPosition);
+    vec3 n = faceforward(normal, -eye, normal);
+    mat3 worldToView = mat3(viewMatrix);
+    vec3 light = worldToView * normalize(vec3(0.49, 0.75, 0.41));
+    vec3 reflected = transpose(worldToView) * reflect(-eye, normal);
+    vec3 rayDx = dFdx(reflected);
+    vec3 rayDy = dFdy(reflected);
+    float facing = clamp(abs(dot(normal, eye)), 0.0, 1.0);
+    float faceWeight = smoothstep(0.0, 0.16, facing);
+    float diffuse = mix(0.22, max(0.0, dot(n, light)), faceWeight);
     vec2 uv = gl_FragCoord.xy / uFrame;
-    float distanceFromFocus = (length(cameraPosition - vSurface) - uLight.z) / uLight.w;
+    float distanceFromFocus = (length(vViewPosition) - uLight.z) / uLight.w;
     float focus = 1.0 / (1.0 + distanceFromFocus * distanceFromFocus);
-    float lower = 1.0 - smoothstep(-1.45, 1.19, vSurface.y);
-    float density = clamp(0.37 * vCavity + 0.52 * lower + 0.17 * smoothstep(-4.3, 4.4, vSurface.z), 0.0, 1.0);
-    float tone = clamp(0.19 + 0.62 * diffuse - 0.30 * vCavity - 0.38 * lower, 0.0, 1.0);
+    float lower = 1.0 - smoothstep(-1.45, 1.19, vSurfaceYZ.x);
+    float density = clamp(0.37 * vCavity + 0.52 * lower + 0.17 * smoothstep(-4.3, 4.4, vSurfaceYZ.y), 0.0, 1.0);
+    float tone = clamp(0.13 + 0.71 * diffuse - 0.24 * vCavity - 0.29 * lower, 0.0, 1.0);
     vec3 blue = mix(uDeep, uCobalt, smoothstep(0.03, 0.58, tone));
     vec3 body = mix(blue, uLake, smoothstep(0.28, 0.86, tone));
 
     float roughness = uOptics.z + 0.20 * (1.0 - focus);
     float fresnelBase = pow((uIor - 1.0) / (uIor + 1.0), 2.0);
     float fresnel = mix(fresnelBase, 1.0, pow(1.0 - facing, 5.0));
-    vec3 viewRay = -(mat3(viewMatrix) * eye);
-    vec3 refracted = refract(viewRay, normalize(vViewNormal) * face, 1.0 / uIor);
+    vec3 refracted = refract(-eye, n, 1.0 / uIor);
     vec2 units = vec2(uFrame.y / uFrame.x, 1.0);
-    vec2 shift = (refracted.xy - viewRay.xy) * uOptics.y * (1.5 + 0.75 * density);
+    // Fade the screen-space offset near a tangent, where the sheet can turn
+    // from its front to its back and reflection is strongest.
+    vec2 shift = (refracted.xy + eye.xy) * uOptics.y * (1.5 + 0.75 * density) * faceWeight;
     float blur = 0.003 + roughness * (0.016 + 0.033 * (1.0 - focus) + 0.011 * density);
     vec3 environment = readEnvironment(uv + shift * units, blur * units);
     // Longer optical paths absorb more warm light, revealing the deeper blue.
@@ -112,19 +135,19 @@ const FRAGMENT = `
     float clarity = uOptics.x * mix(0.93, 0.39, density) * (1.0 - 0.42 * fresnel);
     vec3 base = mix(body, transmission, clarity);
 
-    float soft = reflectionStrip(reflected, normalize(vec3(-0.26, 0.55, -0.79)), vec2(0.87, 0.10 + 0.30 * roughness), 0.28);
-    float ribbon = reflectionStrip(reflected, normalize(vec3(0.46, 0.25, -0.85)), vec2(0.68, 0.028 + 0.13 * roughness), -0.19);
-    float shade = reflectionStrip(reflected, normalize(vec3(-0.10, 0.06, -0.99)), vec2(0.79, 0.14 + 0.16 * roughness), 0.09);
+    float soft = reflectionStrip(reflected, rayDx, rayDy, normalize(vec3(-0.26, 0.55, -0.79)), vec2(0.87, 0.10 + 0.30 * roughness), 0.28);
+    float ribbon = reflectionStrip(reflected, rayDx, rayDy, normalize(vec3(0.46, 0.25, -0.85)), vec2(0.68, 0.028 + 0.13 * roughness), -0.19);
+    float shade = reflectionStrip(reflected, rayDx, rayDy, normalize(vec3(-0.10, 0.06, -0.99)), vec2(0.79, 0.14 + 0.16 * roughness), 0.09);
     // The dark and bright strips share the same reflection ray and the same
     // deformed normal, so they stretch and turn with the surface.
     base = mix(base, mix(uDeep, uCobalt, 0.26 + 0.18 * diffuse), uLight.x * shade * (0.24 + 0.38 * fresnel));
-    float violet = 0.13 * reflectionStrip(reflected, normalize(vec3(-0.68, 0.39, -0.62)), vec2(0.34, 0.16), 0.23);
+    float violet = 0.13 * reflectionStrip(reflected, rayDx, rayDy, normalize(vec3(-0.68, 0.39, -0.62)), vec2(0.34, 0.16), 0.23);
     base = mix(base, uLavender, violet * (1.0 - shade));
     base = mix(base, uCyan, uLight.x * soft * (0.23 + 0.19 * fresnel));
 
-    float edgeLight = reflectionStrip(reflected, normalize(vec3(0.44, -0.12, -0.89)), vec2(0.52, 0.12 + 0.14 * roughness), -0.15);
-    float rim = pow(1.0 - facing, mix(20.0, 10.0, roughness)) * (0.08 + 0.59 * edgeLight + 0.20 * ribbon + 0.13 * soft);
-    float key = pow(max(0.0, dot(n, normalize(light + eye))), mix(64.0, 20.0, roughness));
+    float edgeLight = reflectionStrip(reflected, rayDx, rayDy, normalize(vec3(0.44, -0.12, -0.89)), vec2(0.52, 0.12 + 0.14 * roughness), -0.15);
+    float rim = filteredRim(facing, mix(20.0, 10.0, roughness)) * (0.08 + 0.59 * edgeLight + 0.20 * ribbon + 0.13 * soft);
+    float key = faceWeight * pow(max(0.0, dot(n, normalize(light + eye))), mix(64.0, 20.0, roughness));
     float specular = clamp(uLight.x * ((0.18 + 0.40 * fresnel) * ribbon + 0.16 * soft + 0.12 * key)
       + uLight.y * rim * (0.37 + 0.63 * focus), 0.0, 0.65);
     vec2 reflectionUV = vec2(0.53 + reflected.x * 0.31, 0.66 + reflected.y * 0.23);
@@ -135,6 +158,22 @@ const FRAGMENT = `
     #include <colorspace_fragment>
   }
 `
+
+function derivativeStencils(stations: readonly number[]) {
+  return stations.map((station, index) => {
+    const previous = Math.max(0, index - 1)
+    const next = Math.min(stations.length - 1, index + 1)
+    const before = station - stations[previous]
+    const after = stations[next] - station
+    return {
+      previous, next,
+      beforeRate: before > 0 ? 1 / before : 0,
+      afterRate: after > 0 ? 1 / after : 0,
+      afterWeight: before === 0 ? 1 : after === 0 ? 0 : before / (before + after),
+      curvatureScale: before > 0 && after > 0 ? 2 / (before + after) : 0,
+    }
+  })
+}
 
 function makeSurfaceGeometry({ across, along }: Quality) {
   const stride = across + 1
@@ -174,11 +213,13 @@ function makeSurfaceGeometry({ across, along }: Quality) {
       foreground: depth * depth * (3 - 2 * depth),
     }
   })
-  return { geometry, positions, cavities, columns, sections, along, stride }
+  const columnStencils = derivativeStencils(columns)
+  const depthStencils = derivativeStencils(sections.map(section => section.z))
+  return { geometry, positions, normals, cavities, columns, sections, columnStencils, depthStencils, stride }
 }
 
 function deform(surface: ReturnType<typeof makeSurfaceGeometry>, width: number, time: number) {
-  const { geometry, positions, cavities, columns, sections, along, stride } = surface
+  const { positions, normals, cavities, columns, sections, columnStencils, depthStencils, stride } = surface
   const { amplitude, wavelength, travel, twist, period } = FILM.wave
   const waveScale = (2 * Math.PI / .31) / wavelength
   const offset = time * travel
@@ -233,31 +274,49 @@ function deform(surface: ReturnType<typeof makeSurfaceGeometry>, width: number, 
     }
   }
 
-  for (let row = 0; row <= along; row++) {
-    const farStation = sections[Math.max(0, row - 1)].z
-    const nearStation = sections[Math.min(along, row + 1)].z
-    const farStep = sections[row].z - farStation
-    const nearStep = nearStation - sections[row].z
-    const depthScale = farStep > 0 && nearStep > 0 ? 2 / (farStep + nearStep) : 0
+  // Differentiate the deformed positions along the sheet's two parameters.
+  // The non-uniform stencil estimates the tangent at the vertex itself and
+  // gives both triangles at each diagonal the same smooth normal field.
+  const inverseWidthSquared = 1 / (width * width)
+  for (const [row, depth] of depthStencils.entries()) {
+    const rowStart = row * stride
+    const farStart = depth.previous * stride
+    const nearStart = depth.next * stride
     for (let col = 0; col < stride; col++) {
-      const i = row * stride + col
+      const across = columnStencils[col]
+      const i = rowStart + col
       const y = positions.getY(i)
-      let sideCurvature = 0
-      if (col > 0 && col + 1 < stride) {
-        const leftStep = width * (columns[col] - columns[col - 1])
-        const rightStep = width * (columns[col + 1] - columns[col])
-        sideCurvature = 2 * ((positions.getY(i + 1) - y) / rightStep - (y - positions.getY(i - 1)) / leftStep) / (leftStep + rightStep)
-      }
-      const depthCurvature = depthScale > 0
-        ? depthScale * ((positions.getY(i + stride) - y) / nearStep - (y - positions.getY(i - stride)) / farStep)
-        : 0
-      cavities.setX(i, clamp((sideCurvature + depthCurvature) * .72))
+      const z = positions.getZ(i)
+      const left = rowStart + across.previous
+      const right = rowStart + across.next
+      const far = farStart + col
+      const near = nearStart + col
+      const dyLeft = (y - positions.getY(left)) * across.beforeRate
+      const dyRight = (positions.getY(right) - y) * across.afterRate
+      const dyFar = (y - positions.getY(far)) * depth.beforeRate
+      const dyNear = (positions.getY(near) - y) * depth.afterRate
+      const dyAcross = mix(dyLeft, dyRight, across.afterWeight)
+      const dyDepth = mix(dyFar, dyNear, depth.afterWeight)
+      const dzAcross = mix((z - positions.getZ(left)) * across.beforeRate,
+        (positions.getZ(right) - z) * across.afterRate, across.afterWeight)
+      const dzDepth = mix((z - positions.getZ(far)) * depth.beforeRate,
+        (positions.getZ(near) - z) * depth.afterRate, depth.afterWeight)
+      const nx = dyDepth * dzAcross - dzDepth * dyAcross
+      const ny = width * dzDepth
+      const nz = -width * dyDepth
+      const length = Math.sqrt(nx * nx + ny * ny + nz * nz)
+      if (length > 1e-8) normals.setXYZ(i, nx / length, ny / length, nz / length)
+      else normals.setXYZ(i, 0, 1, 0)
+
+      const curvature = across.curvatureScale * (dyRight - dyLeft) * inverseWidthSquared
+        + depth.curvatureScale * (dyNear - dyFar)
+      cavities.setX(i, clamp(curvature * .72))
     }
   }
 
   positions.needsUpdate = true
+  normals.needsUpdate = true
   cavities.needsUpdate = true
-  geometry.computeVertexNormals()
 }
 
 export function createLiquidSurface() {
