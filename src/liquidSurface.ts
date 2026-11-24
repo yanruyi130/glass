@@ -300,7 +300,7 @@ function flowPressure(position: number, time: number) {
   return Math.tanh(pressure * 2.15)
 }
 
-function deform(surface: ReturnType<typeof makeSurfaceGeometry>, width: number, time: number) {
+function deform(surface: ReturnType<typeof makeSurfaceGeometry>, width: number, time: number, travelDepthSlope: number) {
   const { positions, normals, cavities, thicknesses, columns, sections, columnStencils, depthStencils, stride } = surface
   const { amplitude, crestLift, travel, localBend, disturbance, span, response } = FILM.wave
   // Integrate two slow, shallow speed variations rather than scaling time by
@@ -308,6 +308,7 @@ function deform(surface: ReturnType<typeof makeSurfaceGeometry>, width: number, 
   const offset = travel * (time + .062 * Math.sin(time * .119) / .119
     + .041 * (Math.sin(time * .053 + 1.4) - Math.sin(1.4)) / .053)
   const pressureTime = time / response
+  const depthSpan = FILM.space.depth[1] - FILM.space.depth[0]
   for (let col = 0; col < stride; col++) {
     const across = columns[col]
     const x = width * across
@@ -318,21 +319,23 @@ function deform(surface: ReturnType<typeof makeSurfaceGeometry>, width: number, 
     const following = disturbance * flowPressure(station - 1.19, pressureTime + 3.56)
     const guide = disturbance * flowPressure(station * .67 + 4.73, pressureTime * .64 + 3.41)
     const ribbonPhase = 2.26 * station + .71 * guide + .55 * leading + .16
-    const bank = .28 * Math.tanh((x - 2.5 * guide) / 5.1)
+    const bank = .28 * Math.sin(.69 * ribbonPhase + .70 * guide)
     const driftRange = .63 + .12 * following
     const centerDrift = Math.sin(ribbonPhase + .31 * Math.sin(.62 * ribbonPhase + .59 * following))
     const centerBend = .81 * (bank + driftRange * centerDrift) + .58 * guide + .31 * leading
     const tension = flowEase(clamp(.47 + .69 * leading + .39 * guide))
-    // The crest cuts across the sheet diagonally. Its near end and far end
-    // follow the same moving field with different amounts of pull.
-    const sweep = (FILM.space.diagonal + 1.15 * guide) * Math.tanh((x + 2.1 * guide) / 7.6)
+    // Parallel to camera-right in the ground plane, this depth offset keeps
+    // transport across the frame from descending with the camera's pitch.
+    const depthOffset = travelDepthSlope * x
+    const sweep = (.48 * FILM.space.diagonal + .78 * guide) * Math.sin(.49 * ribbonPhase + .74 * guide)
     const hingeY = .18 + .30 * centerBend
-    const hingeZ = -1.4 + sweep + 2.05 * centerBend + .63 * following
+    const hingeZ = -1.4 + depthOffset + sweep + 2.05 * centerBend + .63 * following
     for (const [row, { depth, z: base, curl, returnCurve, outer, foreground }] of sections.entries()) {
       const pull = mix(leading, following, foreground)
       // A travelling phase varies across the surface as well as down it.
       // Curves along depth stretch and turn through the same connected field.
-      const phase = ribbonPhase + (depth - .42) * (FILM.space.depthPhase + .64 * guide)
+      const laneDepth = depth - depthOffset / depthSpan
+      const phase = ribbonPhase + (laneDepth - .42) * (FILM.space.depthPhase + .64 * guide)
       const drift = Math.sin(phase + .31 * Math.sin(.62 * phase + .59 * pull))
       const lean = bank + driftRange * drift
       const bend = .81 * lean + .58 * guide + .31 * pull
@@ -342,8 +345,8 @@ function deform(surface: ReturnType<typeof makeSurfaceGeometry>, width: number, 
       // Keep the lateral borders anchored offscreen as the middle twists.
       const shear = FILM.space.shear * midSheet * (1 - across * across) * (.24 + .64 * bend + .41 * pull)
       const z = base + 1.32 * returnCurve + outer * (.86 * bend + .38 * guide) + roll + stretch
-      const axis = -3.2 + sweep + 2.05 * bend + 1.05 * pull + .48 * tension
-      const reach = z - axis + (depth - .41) * (1.85 * guide + .76 * pull)
+      const axis = -3.2 + depthOffset + sweep + 2.05 * bend + 1.05 * pull + .48 * tension
+      const reach = z - axis + (laneDepth - .41) * (1.85 * guide + .76 * pull)
       // Shape the crest as a stretched shoulder with a tighter rise and a
       // longer release. A falling pull flattens and lengthens both slopes.
       const neck = localBend * FILM.fold.neck * tension
@@ -356,15 +359,17 @@ function deform(surface: ReturnType<typeof makeSurfaceGeometry>, width: number, 
       // the near side. Its center follows the same sweep with a gentle lag.
       const trough = (reach - 4.45 - .68 * following) / (3.18 - .41 * pull)
       const hollow = Math.exp(-trough * trough) * (.58 + .36 * pull + .19 * tension)
-      const returnAxis = 3.15 + .62 * sweep + 1.45 * bend - .86 * following
+      const returnAxis = 3.15 + depthOffset + .62 * sweep + 1.45 * bend - .86 * following
       const shoulder = .5 + .5 * Math.tanh((z - returnAxis) / (2.65 + .50 * guide))
-      const crossSlope = Math.tanh((x - 2.9 * following + 2.4 * depth) / 5.6)
+      const crossSlope = Math.tanh(1.3 * Math.sin(.61 * ribbonPhase - .84 * laneDepth + .55 * following))
       const front = shoulder * foreground * (.87 - .69 * lean + .55 * following + .34 * guide - .52 * crossSlope)
       // An interior saddle bends across the return slope. Its signed relief
       // joins the shelf and basin without adding another crest or boundary.
-      const alongSlope = Math.tanh((z - .70 - .42 * sweep + .60 * pull) / 3.9)
+      const alongSlope = Math.tanh((z - depthOffset - .70 - .42 * sweep + .60 * pull) / 3.9)
       const saddle = FILM.space.saddle * midSheet * alongSlope * crossSlope
-      const drape = (.78 * lean + .40 * guide - .62) * outer
+      // Carry the advected deformation into the far turn, where the central
+      // crest and saddle envelopes no longer contribute much motion.
+      const drape = (.61 * lean + .33 * guide + .72 * pull - .62) * outer
       const y = -.36 + amplitude * (lift - hollow + front + saddle + drape) - 1.02 * returnCurve
 
       // The roll turns points around a local hinge. Its angle fades with
@@ -481,6 +486,7 @@ export function createLiquidSurface() {
   let surface = makeSurfaceGeometry(quality)
   const scene = new Scene()
   const camera = new PerspectiveCamera(44, 1, .2, 60)
+  const cameraTarget = new Vector3(-.42, .26, -2.55)
   const uniforms = {
     uDeep: { value: new Color(palette.deep) }, uCobalt: { value: new Color(palette.cobalt) },
     uLake: { value: new Color(palette.lake) }, uCyan: { value: new Color(palette.cyan) },
@@ -523,6 +529,9 @@ export function createLiquidSurface() {
     if (canvas.width !== frameWidth || canvas.height !== frameHeight) renderer.setSize(frameWidth, frameHeight, false)
     const aspect = width / height
     const narrow = clamp((1.55 - aspect) / .90)
+    const cameraX = 4.15 - 1.75 * narrow
+    const cameraZ = 9.55 + .70 * narrow
+    const travelDepthSlope = (cameraTarget.x - cameraX) / (cameraZ - cameraTarget.z)
     camera.aspect = aspect
     if (import.meta.env.DEV && inspection === 'side') {
       camera.fov = 50
@@ -530,8 +539,8 @@ export function createLiquidSurface() {
       camera.lookAt(0, .35, -.9)
     } else {
       camera.fov = 43 + 8 * narrow
-      camera.position.set(4.15 - 1.75 * narrow, 6.3 + .23 * narrow, 9.55 + .70 * narrow)
-      camera.lookAt(-.42, .26, -2.55)
+      camera.position.set(cameraX, 6.3 + .23 * narrow, cameraZ)
+      camera.lookAt(cameraTarget)
     }
     camera.updateProjectionMatrix()
     if (import.meta.env.DEV) material.wireframe = inspection === 'wireframe'
@@ -540,7 +549,7 @@ export function createLiquidSurface() {
     // single sheet shades and composites over that same background.
     environment.drawImage(target.canvas, 0, 0, environmentCanvas.width, environmentCanvas.height)
     environmentTexture.needsUpdate = true
-    deform(surface, Math.max(10.1, 11.4 * aspect), time)
+    deform(surface, Math.max(10.1, 11.4 * aspect), time, travelDepthSlope)
     uniforms.uFrame.value.set(frameWidth, frameHeight)
     renderer.render(scene, camera)
     target.drawImage(canvas, 0, 0, 1, 1)
