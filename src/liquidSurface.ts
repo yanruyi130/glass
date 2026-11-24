@@ -13,11 +13,12 @@ const FILM = {
   },
   wave: { amplitude: 1.04, crestLift: 1.08, travel: 2.76, localBend: .73, disturbance: .86, span: 8.6, response: 10.4 },
   fold: { neck: .43, roll: .63 },
-  space: { depth: [-14.0, 10.8], diagonal: 4.1, stretch: 2.1, shear: 1.3 },
+  space: { depth: [-16.3, 11.6], diagonal: 4.6, stretch: 2.3, shear: 1.3, depthPhase: 2.4, saddle: 1.48 },
   optics: {
     transmission: .80,
-    absorption: [3.65, 1.64, .29],
-    sheetThickness: [.34, .82],
+    absorption: [4.25, 1.93, .29],
+    sheetThickness: [.25, .56],
+    edgeThickness: .72,
     refraction: .105,
     refractiveIndex: 1.38,
     roughness: .24,
@@ -26,10 +27,10 @@ const FILM = {
     cyanReflection: .48,
     violetReflection: .10,
     rimLight: .73,
-    focusDepth: 11.2,
-    focusRange: 6.4,
+    focusDepth: 12.1,
+    focusRange: 7.2,
   },
-  focus: { near: [5.8, 9.6], far: [11.6, 19.5], strength: .65 },
+  focus: { near: [6.3, 10.5], far: [12.4, 21.4], strength: .64 },
   quality: {
     fine: { across: 152, along: 96, width: 920, height: 545 },
     compact: { across: 96, along: 66, width: 710, height: 470 },
@@ -163,9 +164,9 @@ const FRAGMENT = `
     // Prefilter the source scenery rather than blurring covered pixels of
     // the rendered sheet. The same taps stay centered on the refracted ray.
     vec3 environment = readEnvironment(uv + shift * units, blur * units, 3.1 * defocus);
-    // The ray length grows with the sheet's local thickness and its angle
-    // inside the film. Refraction keeps the path bounded at grazing angles.
-    float throughFacing = max(0.65, -dot(refracted, n));
+    // Keep the path through the two-sided film bounded at a grazing angle.
+    // A turned surface can reflect a thin highlight without a dark sidewall.
+    float throughFacing = mix(0.81, 1.0, facing * facing);
     float opticalDepth = vThickness / throughFacing * (1.0 + 0.12 * cavity);
     vec3 transmission = environment * exp(-uAbsorption * opticalDepth);
     float clarity = uOptics.x * (1.0 - 0.13 * cavity) * (1.0 - 0.16 * fresnel);
@@ -185,7 +186,7 @@ const FRAGMENT = `
     base = mix(base, uCyan, cyan);
 
     float edgeLight = reflectionStrip(reflected, rayDx, rayDy, normalize(vec3(0.44, -0.12, -0.89)), vec2(0.52, 0.12 + 0.14 * roughness), -0.15, 0.0);
-    float rim = filteredRim(facing, mix(20.0, 10.0, roughness)) * (0.08 + 0.59 * edgeLight + 0.20 * ribbon + 0.13 * soft);
+    float rim = filteredRim(facing, mix(24.0, 14.0, roughness)) * (0.15 + 0.52 * edgeLight + 0.20 * ribbon + 0.13 * soft);
     float key = faceWeight * pow(max(0.0, dot(n, normalize(light + eye))), mix(64.0, 20.0, roughness));
     // Hand over the narrow reflection to the grazing rim on the same film.
     // A shared lobe avoids adding two creases around the turning point.
@@ -317,17 +318,24 @@ function deform(surface: ReturnType<typeof makeSurfaceGeometry>, width: number, 
     const following = disturbance * flowPressure(station - 1.19, pressureTime + 3.56)
     const guide = disturbance * flowPressure(station * .67 + 4.73, pressureTime * .64 + 3.41)
     const ribbonPhase = 2.26 * station + .71 * guide + .55 * leading + .16
-    const drift = Math.sin(ribbonPhase + .31 * Math.sin(.62 * ribbonPhase + .59 * following))
-    const lean = .28 * Math.tanh((x - 2.5 * guide) / 5.1) + (.63 + .12 * following) * drift
-    const bend = .81 * lean + .58 * guide + .31 * leading
+    const bank = .28 * Math.tanh((x - 2.5 * guide) / 5.1)
+    const driftRange = .63 + .12 * following
+    const centerDrift = Math.sin(ribbonPhase + .31 * Math.sin(.62 * ribbonPhase + .59 * following))
+    const centerBend = .81 * (bank + driftRange * centerDrift) + .58 * guide + .31 * leading
     const tension = flowEase(clamp(.47 + .69 * leading + .39 * guide))
     // The crest cuts across the sheet diagonally. Its near end and far end
     // follow the same moving field with different amounts of pull.
     const sweep = (FILM.space.diagonal + 1.15 * guide) * Math.tanh((x + 2.1 * guide) / 7.6)
-    const hingeY = .18 + .30 * bend
-    const hingeZ = -1.4 + sweep + 2.05 * bend + .63 * following
+    const hingeY = .18 + .30 * centerBend
+    const hingeZ = -1.4 + sweep + 2.05 * centerBend + .63 * following
     for (const [row, { depth, z: base, curl, returnCurve, outer, foreground }] of sections.entries()) {
       const pull = mix(leading, following, foreground)
+      // A travelling phase varies across the surface as well as down it.
+      // Curves along depth stretch and turn through the same connected field.
+      const phase = ribbonPhase + (depth - .42) * (FILM.space.depthPhase + .64 * guide)
+      const drift = Math.sin(phase + .31 * Math.sin(.62 * phase + .59 * pull))
+      const lean = bank + driftRange * drift
+      const bend = .81 * lean + .58 * guide + .31 * pull
       const roll = localBend * (1.04 * bend + .51 * pull) * curl
       const midSheet = 4 * depth * (1 - depth)
       const stretch = FILM.space.stretch * midSheet * (pull + .36 * bend) * (depth - .37)
@@ -342,7 +350,7 @@ function deform(surface: ReturnType<typeof makeSurfaceGeometry>, width: number, 
       const rise = .5 + .5 * Math.tanh((reach + 1.76) / (1.40 - neck - .31 * pull))
       const release = .5 - .5 * Math.tanh((reach - 1.53 + .62 * pull) / (2.36 + .48 * guide - .52 * pull))
       const crestStrength = flowEase(clamp(.64 + .45 * lean + .24 * pull))
-      const lift = rise * release * (1.76 + 1.09 * lean + .70 * pull + .24 * guide
+      const lift = rise * release * (1.56 + .93 * lean + .70 * pull + .24 * guide
         + crestLift * (.33 + .67 * crestStrength))
       // The return slope widens into a shallow basin and lifts again toward
       // the near side. Its center follows the same sweep with a gentle lag.
@@ -351,9 +359,13 @@ function deform(surface: ReturnType<typeof makeSurfaceGeometry>, width: number, 
       const returnAxis = 3.15 + .62 * sweep + 1.45 * bend - .86 * following
       const shoulder = .5 + .5 * Math.tanh((z - returnAxis) / (2.65 + .50 * guide))
       const crossSlope = Math.tanh((x - 2.9 * following + 2.4 * depth) / 5.6)
-      const front = shoulder * foreground * (.96 - .74 * lean + .55 * following + .34 * guide - .63 * crossSlope)
+      const front = shoulder * foreground * (.87 - .69 * lean + .55 * following + .34 * guide - .52 * crossSlope)
+      // An interior saddle bends across the return slope. Its signed relief
+      // joins the shelf and basin without adding another crest or boundary.
+      const alongSlope = Math.tanh((z - .70 - .42 * sweep + .60 * pull) / 3.9)
+      const saddle = FILM.space.saddle * midSheet * alongSlope * crossSlope
       const drape = (.78 * lean + .40 * guide - .62) * outer
-      const y = -.36 + amplitude * (lift - hollow + front + drape) - 1.02 * returnCurve
+      const y = -.36 + amplitude * (lift - hollow + front + saddle + drape) - 1.02 * returnCurve
 
       // The roll turns points around a local hinge. Its angle fades with
       // radius, preserving the continuous sheet through the turn.
@@ -375,7 +387,9 @@ function deform(surface: ReturnType<typeof makeSurfaceGeometry>, width: number, 
     const rowStart = row * stride
     const farStart = depth.previous * stride
     const nearStart = depth.next * stride
-    const restThickness = mix(thin, thick, sections[row].foreground)
+    const section = sections[row]
+    const restThickness = mix(thin, thick, section.foreground)
+    const endDistance = Math.min(section.depth, 1 - section.depth)
     for (let col = 0; col < stride; col++) {
       const across = columnStencils[col]
       const i = rowStart + col
@@ -408,10 +422,13 @@ function deform(surface: ReturnType<typeof makeSurfaceGeometry>, width: number, 
       const ny = dzDepth * dxAcross - dxDepth * dzAcross
       const nz = dxDepth * dyAcross - dyDepth * dxAcross
       const length = Math.sqrt(nx * nx + ny * ny + nz * nz)
-      // The tangent cross product measures area stretch relative to the flat
-      // sheet. Stretched areas carry a shallower layer of liquid.
+      // This optical thickness is independent of the mesh height. Stretch
+      // and a smooth taper toward the actual perimeter make the film thinner.
       const stretch = clamp(length / width, .66, 2.4)
-      thicknesses.setX(i, restThickness / Math.sqrt(stretch))
+      const sideDistance = (1 - Math.abs(columns[col])) * .5
+      const edge = flowEase(clamp(Math.min(endDistance, sideDistance) / .12))
+      const taper = mix(FILM.optics.edgeThickness, 1, edge)
+      thicknesses.setX(i, restThickness * taper / Math.sqrt(stretch))
       if (length <= 1e-8) {
         normals.setXYZ(i, 0, 1, 0)
         cavities.setX(i, 0)
@@ -512,9 +529,9 @@ export function createLiquidSurface() {
       camera.position.set(12.9, 3.65, 4.1)
       camera.lookAt(0, .35, -.9)
     } else {
-      camera.fov = 44 + 7 * narrow
-      camera.position.set(2.85 - 1.05 * narrow, 5.2 + .32 * narrow, 9.3 + .74 * narrow)
-      camera.lookAt(-.24, .32, -2.25)
+      camera.fov = 43 + 8 * narrow
+      camera.position.set(4.15 - 1.75 * narrow, 6.3 + .23 * narrow, 9.55 + .70 * narrow)
+      camera.lookAt(-.42, .26, -2.55)
     }
     camera.updateProjectionMatrix()
     if (import.meta.env.DEV) material.wireframe = inspection === 'wireframe'
@@ -523,7 +540,7 @@ export function createLiquidSurface() {
     // single sheet shades and composites over that same background.
     environment.drawImage(target.canvas, 0, 0, environmentCanvas.width, environmentCanvas.height)
     environmentTexture.needsUpdate = true
-    deform(surface, Math.max(9.1, 10.1 * aspect), time)
+    deform(surface, Math.max(10.1, 11.4 * aspect), time)
     uniforms.uFrame.value.set(frameWidth, frameHeight)
     renderer.render(scene, camera)
     target.drawImage(canvas, 0, 0, 1, 1)
