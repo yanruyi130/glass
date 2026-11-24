@@ -7,32 +7,16 @@ export type AudioInput = Readonly<{ low: number; mid: number; high: number; ener
 
 export interface BackgroundFrame {
   time: number
-  phase: number
   cloudTime: number
   cloudDriftTime: number
   climate: Climate
-  audio: AudioInput
   detail: number
 }
 
-type Axis = readonly [number, number, number, number]
-
-const SKY = [0, .36, .7, 1]
 const TWO_PI = Math.PI * 2
 
 function rgba([r, g, b]: Rgb, alpha = 1) {
   return 'rgba(' + Math.round(r) + ',' + Math.round(g) + ',' + Math.round(b) + ',' + alpha + ')'
-}
-
-function gradient(
-  context: CanvasRenderingContext2D, axis: Axis, colors: readonly Rgb[],
-  positions: readonly number[], alphas?: readonly number[],
-) {
-  const fill = context.createLinearGradient(...axis)
-  for (const [index, color] of colors.entries()) {
-    fill.addColorStop(positions[index], rgba(color, alphas?.[index]))
-  }
-  return fill
 }
 
 function glow(context: CanvasRenderingContext2D, x: number, y: number, radius: number, color: Rgb, alpha: number) {
@@ -216,36 +200,27 @@ export function createBackground(canvas: HTMLCanvasElement) {
   }
 
   function render(frame: BackgroundFrame) {
-    const { time, phase, cloudTime, cloudDriftTime, climate, audio, detail } = frame
+    const { time, cloudTime, cloudDriftTime, climate, detail } = frame
     const daylight = climate.sunlight
     const narrow = clamp((1.9 - width / height) / 1.2)
     const palette = climate.palette
-    const [air, satin] = palette.light
     const sunX = .805 + narrow * .025
-    const cloudCenter = .49 + .17 * Math.sin((cloudTime - cloudDriftTime) * .048 + 2.1)
-    const shadowExtent = .48
-    const cloudX = driftCloud(cloudCenter - shadowExtent, shadowExtent * 2, cloudDriftTime * .17 * .048) + shadowExtent
 
     context.setTransform(canvas.width, 0, 0, canvas.height, 0, 0)
-    context.fillStyle = gradient(context, [.12, 0, .85, 1], palette.sky, SKY)
-    context.fillRect(0, 0, 1, 1)
-    glow(context, .64 + Math.cos(time * .08) * .058, .194, .61, air, .30)
-    glow(context, .86, .46, .54, satin, .14)
+    liquid.paintEnvironment(context)
     if (daylight > .002) {
       sunnySky ??= createSunnySky()
       const sunY = Math.max(.175 + narrow * .022, 93 / height)
       context.setTransform(canvas.width / width, 0, 0, canvas.height / height, 0, 0)
-      sunnySky(context, width, height, time, sunX, sunY, daylight)
+      sunnySky(context, width, height, time, sunX, sunY, daylight * .105)
       context.setTransform(canvas.width, 0, 0, canvas.height, 0, 0)
     }
     if (climate.cloudCover > .035) {
       clouds ??= [cloudStamp(23, .15), cloudStamp(71, .87)]
-      paintClouds(context, clouds, cloudTime, cloudDriftTime, climate.cloudCover)
+      paintClouds(context, clouds, cloudTime, cloudDriftTime, climate.cloudCover * .28)
     }
 
-    liquid.render(context, width, height, detail, phase, climate, audio, cloudX, undefined, time)
-    glow(context, .03, .21, .37, [6, 14, 30], .63 * (1 - daylight))
-    glow(context, .98, .025, .34, [5, 16, 35], .52 * (1 - daylight))
+    liquid.render(context, width, height, detail, time)
 
     context.setTransform(canvas.width / width, 0, 0, canvas.height / height, 0, 0)
     if (climate.rainfall > .002) paintRain(context, width, height, time, climate.rainfall, detail, palette.foam[2])

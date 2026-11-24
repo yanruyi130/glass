@@ -126,7 +126,7 @@ export function App() {
         theme={THEME} shape={shape} material={material} backgroundPlaying={backgroundPlaying} expanded={expanded} selected={selected}
         gap={gap} samples={samples} reset={reset} reducedMotion={reducedMotion}
         weather={weather} rainAmount={rainAmount} slideSpeed={slideSpeed} frostCoverage={frostCoverage / 100}
-        musicBands={soundscape.bands} musicPlaying={soundscape.playing}
+        musicPlaying={soundscape.playing}
         renderPlayer={appearance => appearance === 'turntable'
           ? <TurntableDeck player={player} motion={turntableMotion} reducedMotion={reducedMotion} />
           : <PlayerControls appearance={appearance} player={player} />}
